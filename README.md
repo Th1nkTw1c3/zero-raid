@@ -2,6 +2,8 @@
 
 **Your inbox is a dungeon. Clear it.**
 
+![Zero Raid](screenshot.png)
+
 A DOOM-style (1993) first-person email triage game built for Hackyard Yard #4.
 Every demon is a **real unread email** in your Gmail. Every kill is a **real
 mutation** — archive, trash, star, or a threaded reply. This is not
