@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZERO RAID — inbox zero or die</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%F0%9F%91%B9%3C/text%3E%3C/svg%3E" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        overflow: hidden;
+        height: 100%;
+        font-family: 'Courier New', monospace;
+      }
+      #app {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      canvas {
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+      #boot {
+        color: #b02020;
+        position: absolute;
+        text-align: center;
+        letter-spacing: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"><div id="boot">ZERO RAID — LOADING…</div></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
