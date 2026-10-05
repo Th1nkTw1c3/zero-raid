@@ -1,5 +1,5 @@
-import { json, wrap } from './_lib/http';
-import { clearSession } from './_lib/session';
+import { json, wrap } from './_lib/http.js';
+import { clearSession } from './_lib/session.js';
 
 // GET/POST /api/logout -> clear session cookie
 export default wrap((_req, res) => {

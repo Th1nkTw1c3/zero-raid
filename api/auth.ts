@@ -1,14 +1,11 @@
-import { GMAIL_SCOPES } from './_lib/gmail';
-import { getDemoState, demoCookie } from './_lib/demo';
-import { redirect, json, query, wrap } from './_lib/http';
-import { oauthConfigured, redirectUri, setSession } from './_lib/session';
+import { GMAIL_SCOPES } from './_lib/gmail.js';
+import { redirect, json, query, wrap } from './_lib/http.js';
+import { oauthConfigured, redirectUri, setSession } from './_lib/session.js';
 
 // GET /api/auth -> redirect to Google consent (least-privilege scopes).
 // GET /api/auth?demo=1 -> enter demo mode even when OAuth is configured.
 export default wrap((req, res) => {
   if (query(req).get('demo') === '1') {
-    const { state } = getDemoState(req.headers.cookie);
-    res.setHeader('Set-Cookie', demoCookie(state.id));
     setSession(req, res, {
       accessToken: '',
       refreshToken: '',

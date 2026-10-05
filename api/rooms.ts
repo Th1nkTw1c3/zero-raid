@@ -1,16 +1,16 @@
-import { getDemoState, demoCookie } from './_lib/demo';
-import { ROOMS, fetchUnread, authedSession, flagNeedsReply } from './_lib/gmail';
-import { json, wrap } from './_lib/http';
-import { oauthConfigured, demoForced, getSession } from './_lib/session';
+import { getDemoState, demoRooms } from './_lib/demo.js';
+import { ROOMS, fetchUnread, authedSession, flagNeedsReply } from './_lib/gmail.js';
+import { json, wrap } from './_lib/http.js';
+import { oauthConfigured, demoForced, getSession } from './_lib/session.js';
 
 // GET /api/rooms -> [{ id, name, unread: [{id, subject, from, snippet, needsReply}] }]
 export default wrap(async (req, res) => {
   if (demoForced() || !oauthConfigured() || getSession(req)?.demo) {
-    const { state, isNew } = getDemoState(req.headers.cookie);
-    if (isNew) res.setHeader('Set-Cookie', demoCookie(state.id));
+    const state = getDemoState(req.headers.cookie);
+    const rooms = demoRooms(state);
     json(res, 200, {
       demo: true,
-      rooms: ROOMS.map((r) => ({ id: r.id, name: r.name, unread: state.rooms[r.id] || [] })),
+      rooms: ROOMS.map((r) => ({ id: r.id, name: r.name, unread: rooms[r.id] || [] })),
     });
     return;
   }

@@ -5,13 +5,13 @@ import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-import auth from '../api/auth';
-import callback from '../api/callback';
-import status from '../api/status';
-import rooms from '../api/rooms';
-import modify from '../api/modify';
-import reply from '../api/reply';
-import logout from '../api/logout';
+import auth from '../api/auth.js';
+import callback from '../api/callback.js';
+import status from '../api/status.js';
+import rooms from '../api/rooms.js';
+import modify from '../api/modify.js';
+import reply from '../api/reply.js';
+import logout from '../api/logout.js';
 
 const app = express();
 const PORT = Number(process.env.API_PORT || 8787);

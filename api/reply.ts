@@ -1,7 +1,7 @@
-import { getDemoState, demoCookie, demoApply } from './_lib/demo';
-import { sendReply, authedSession } from './_lib/gmail';
-import { json, readBody, wrap } from './_lib/http';
-import { oauthConfigured, demoForced, getSession } from './_lib/session';
+import { getDemoState, demoCookie, demoApply } from './_lib/demo.js';
+import { sendReply, authedSession } from './_lib/gmail.js';
+import { json, readBody, wrap } from './_lib/http.js';
+import { oauthConfigured, demoForced, getSession } from './_lib/session.js';
 
 // POST /api/reply { id, threadId, subject, from, messageId, body }
 // The "spell": sends a real threaded reply via gmail.send, then archives.
@@ -19,9 +19,9 @@ export default wrap(async (req, res) => {
   }
 
   if (demoForced() || !oauthConfigured() || getSession(req)?.demo) {
-    const { state, isNew } = getDemoState(req.headers.cookie);
-    if (isNew) res.setHeader('Set-Cookie', demoCookie(state.id));
+    const state = getDemoState(req.headers.cookie);
     demoApply(state, id);
+    res.setHeader('Set-Cookie', demoCookie(state));
     json(res, 200, { ok: true, simulated: true });
     return;
   }

@@ -1,6 +1,6 @@
-import { exchangeCode, fetchProfile } from './_lib/gmail';
-import { redirect, query, wrap } from './_lib/http';
-import { setSession, type Session } from './_lib/session';
+import { exchangeCode, fetchProfile } from './_lib/gmail.js';
+import { redirect, query, wrap } from './_lib/http.js';
+import { setSession, type Session } from './_lib/session.js';
 
 // GET /api/callback?code=... -> exchange code, set encrypted session cookie, go to game
 export default wrap(async (req, res) => {

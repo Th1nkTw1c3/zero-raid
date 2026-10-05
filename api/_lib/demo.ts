@@ -1,14 +1,10 @@
-// Demo mode: seeded fake mail, mutated server-side in memory.
-// Only active when OAuth is not configured or DEMO_MODE=1. Clearly labeled via /api/status.
-import crypto from 'node:crypto';
-import { flagNeedsReply, type UnreadMessage } from './gmail';
+// Demo mode: seeded fake mail. Stateless — the zr_demo cookie carries the set
+// of consumed message ids, so this works across serverless invocations.
+import { flagNeedsReply, type UnreadMessage } from './gmail.js';
 
-interface DemoState {
-  id: string;
-  rooms: Record<string, UnreadMessage[]>;
+export interface DemoState {
+  consumed: Set<string>;
 }
-
-const states = new Map<string, DemoState>();
 
 const DEMO_SUBJECTS: Record<string, { subject: string; from: string }[]> = {
   primary: [
@@ -41,12 +37,7 @@ const DEMO_SUBJECTS: Record<string, { subject: string; from: string }[]> = {
   ],
 };
 
-export function getDemoState(cookieHeader: string | undefined): { state: DemoState; isNew: boolean } {
-  const match = /zr_demo=([a-z0-9]+)/.exec(cookieHeader || '');
-  if (match && states.has(match[1])) {
-    return { state: states.get(match[1])!, isNew: false };
-  }
-  const id = crypto.randomBytes(8).toString('hex');
+function seededRooms(): Record<string, UnreadMessage[]> {
   const rooms: Record<string, UnreadMessage[]> = {};
   for (const [roomId, mails] of Object.entries(DEMO_SUBJECTS)) {
     rooms[roomId] = mails.map((m, i) => ({
@@ -60,22 +51,33 @@ export function getDemoState(cookieHeader: string | undefined): { state: DemoSta
     }));
   }
   Object.keys(rooms).forEach((roomId, i) => flagNeedsReply(rooms[roomId], i));
-  const state: DemoState = { id, rooms };
-  states.set(id, state);
-  return { state, isNew: true };
+  return rooms;
 }
 
-export function demoCookie(id: string): string {
-  return `zr_demo=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`;
+export function getDemoState(cookieHeader: string | undefined): DemoState {
+  const match = /(?:^|;\s*)zr_demo=([^;]+)/.exec(cookieHeader || '');
+  const ids = match ? decodeURIComponent(match[1]).split(',').filter(Boolean) : [];
+  return { consumed: new Set(ids) };
+}
+
+export function demoRooms(state: DemoState): Record<string, UnreadMessage[]> {
+  const rooms = seededRooms();
+  for (const list of Object.values(rooms)) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (state.consumed.has(list[i].id)) list.splice(i, 1);
+    }
+  }
+  return rooms;
+}
+
+export function demoCookie(state: DemoState): string {
+  const val = encodeURIComponent([...state.consumed].join(','));
+  return `zr_demo=${val}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`;
 }
 
 export function demoApply(state: DemoState, id: string): boolean {
-  for (const mails of Object.values(state.rooms)) {
-    const idx = mails.findIndex((m) => m.id === id);
-    if (idx >= 0) {
-      mails.splice(idx, 1);
-      return true;
-    }
-  }
-  return false;
+  const known = Object.values(seededRooms()).some((list) => list.some((m) => m.id === id));
+  if (!known || state.consumed.has(id)) return false;
+  state.consumed.add(id);
+  return true;
 }

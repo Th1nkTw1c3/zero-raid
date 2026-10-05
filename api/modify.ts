@@ -1,7 +1,7 @@
-import { getDemoState, demoCookie, demoApply } from './_lib/demo';
-import { applyAction, authedSession, type RaidAction } from './_lib/gmail';
-import { json, readBody, wrap } from './_lib/http';
-import { oauthConfigured, demoForced, getSession } from './_lib/session';
+import { getDemoState, demoCookie, demoApply } from './_lib/demo.js';
+import { applyAction, authedSession, type RaidAction } from './_lib/gmail.js';
+import { json, readBody, wrap } from './_lib/http.js';
+import { oauthConfigured, demoForced, getSession } from './_lib/session.js';
 
 const VALID_ACTIONS: RaidAction[] = ['archive', 'trash', 'star'];
 
@@ -20,9 +20,9 @@ export default wrap(async (req, res) => {
   }
 
   if (demoForced() || !oauthConfigured() || getSession(req)?.demo) {
-    const { state, isNew } = getDemoState(req.headers.cookie);
-    if (isNew) res.setHeader('Set-Cookie', demoCookie(state.id));
+    const state = getDemoState(req.headers.cookie);
     const ok = demoApply(state, id);
+    res.setHeader('Set-Cookie', demoCookie(state));
     json(res, ok ? 200 : 404, { ok });
     return;
   }
