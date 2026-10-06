@@ -5,6 +5,7 @@ export interface UnreadMsg {
   from: string;
   snippet: string;
   needsReply: boolean;
+  boss: boolean;
   messageId: string;
 }
 

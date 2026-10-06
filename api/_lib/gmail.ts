@@ -15,6 +15,7 @@ export interface UnreadMessage {
   from: string;
   snippet: string;
   needsReply: boolean;
+  boss: boolean;
   messageId: string; // RFC Message-ID header, used to thread replies
 }
 
@@ -42,6 +43,29 @@ export function flagNeedsReply(messages: UnreadMessage[], levelIndex: number): v
   // Guarantee at least one cursed demon in deeper rooms with enough mail.
   if (levelIndex > 0 && flagged === 0 && messages.length >= 2) {
     messages[hashId(messages[0].id) % messages.length].needsReply = true;
+  }
+}
+
+// Pick the most threatening mail in the room — it becomes the boss demon.
+export function pickBoss(messages: UnreadMessage[]): void {
+  let best: UnreadMessage | null = null;
+  let bestScore = -Infinity;
+  for (const m of messages) {
+    let score = 0;
+    if (m.needsReply) score += 10;
+    if (!BULK_SENDER.test(m.from)) score += 5;
+    if (m.subject.includes('?')) score += 3;
+    if (/^re:/i.test(m.subject)) score += 2;
+    if (/urgent|asap|deadline|today|tomorrow/i.test(m.subject)) score += 3;
+    if (m.subject.length < 40) score += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      best = m;
+    }
+  }
+  if (best) {
+    best.boss = true;
+    best.needsReply = true;
   }
 }
 
@@ -165,6 +189,7 @@ export async function fetchUnread(
         from: get('From'),
         snippet: msg.snippet || '',
         needsReply: false,
+        boss: false,
         messageId: get('Message-ID'),
       };
     }),

@@ -109,4 +109,26 @@ export const sfx = {
   step() {
     noiseBurst(0.04, 400, 0.08);
   },
+  growl() {
+    tone(60, 40, 0.3, 0.12, 'sawtooth');
+    noiseBurst(0.25, 200, 0.08);
+  },
+  bossRoar() {
+    tone(50, 30, 1.2, 0.5, 'sawtooth');
+    noiseBurst(1.0, 150, 0.4);
+  },
+  bossDie() {
+    noiseBurst(0.6, 400, 0.8);
+    tone(90, 25, 0.5, 0.4, 'sawtooth');
+    const a = audio();
+    if (a) {
+      setTimeout(() => {
+        noiseBurst(0.6, 400, 0.8);
+        tone(90, 25, 0.5, 0.4, 'sawtooth');
+      }, 150);
+    }
+  },
+  alert() {
+    tone(880, 440, 0.12, 0.25, 'square');
+  },
 };

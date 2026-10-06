@@ -1,5 +1,5 @@
 import { getDemoState, demoRooms } from './_lib/demo.js';
-import { ROOMS, fetchUnread, authedSession, flagNeedsReply } from './_lib/gmail.js';
+import { ROOMS, fetchUnread, authedSession, flagNeedsReply, pickBoss } from './_lib/gmail.js';
 import { json, wrap } from './_lib/http.js';
 import { oauthConfigured, demoForced, getSession } from './_lib/session.js';
 
@@ -27,6 +27,9 @@ export default wrap(async (req, res) => {
       unread: await fetchUnread(session, room.query),
     })),
   );
-  rooms.forEach((room, i) => flagNeedsReply(room.unread, i));
+  rooms.forEach((room, i) => {
+    flagNeedsReply(room.unread, i);
+    pickBoss(room.unread);
+  });
   json(res, 200, { demo: false, rooms });
 });

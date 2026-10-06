@@ -83,9 +83,149 @@ const CURSED_PALETTE: Palette = {
   Y: '#f04040',
 };
 
+// Boss: the mail that actually matters. Big horns, red eyes, bony teeth.
+const BOSS_ROWS = [
+  '....KK............KK....',
+  '...KKKK..........KKKK...',
+  '...KKKKK........KKKKK...',
+  '....KKKKK......KKKKK....',
+  '.....KKKKK....KKKKK.....',
+  '......KKKKKKKKKKKK......',
+  '.....KRRRRRRRRRRRRK.....',
+  '...KRRRRRRRRRRRRRRRK...',
+  '....KRRREERRRREERRRK....',
+  '....KRRREERRRREERRRK....',
+  '..KRRRRRRRRRRRRRRRRRK...',
+  '..KRRRRRRRRRRRRRRRRRK...',
+  '..KRRRRWWWWWWWWWWRRRK...',
+  '..KRRRWRWRWRWRWRWRRRK...',
+  '..KRRRRWWWWWWWWWWRRRK...',
+  '...KRRRRRRRRRRRRRRK.....',
+  '...KRRRRRRRRRRRRRRK.....',
+  '..KRRRRRRRRRRRRRRRRK....',
+  '..KRRRRKRRRRRRKRRRRK....',
+  '..KRRRRKRRRRRRKRRRRK....',
+  '..KRRRRRRRRRRRRRRRRK....',
+  '...KRRRRRRRRRRRRRRK.....',
+  '....KKKRRRRRRRRKKK......',
+  '......KKKKKKKKKK........',
+];
+
+const BOSS_PALETTE: Palette = {
+  K: '#3a0c0c',
+  R: '#8c1818',
+  W: '#d0c0a0',
+  E: '#f04040',
+  Y: '#f0e040',
+};
+
+export interface DemonFrames {
+  walk: HTMLCanvasElement[];
+  attack: HTMLCanvasElement;
+  pain: HTMLCanvasElement;
+  death: HTMLCanvasElement[];
+}
+
+// walk[1]: legs shifted so feet alternate; attack: horns/arms raised, wider mouth.
+function makeFrames(
+  rows: string[],
+  palette: Palette,
+  scale: number,
+  altLegs: string[],
+  attackRows: string[],
+): DemonFrames {
+  const walk0 = drawPixels(rows, palette, scale);
+  const walk1 = drawPixels([...rows.slice(0, rows.length - 3), ...altLegs], palette, scale);
+  const attack = drawPixels(attackRows, palette, scale);
+  // Pain frame: everything bleached white except the eyes.
+  const painPal: Palette = {};
+  for (const k of Object.keys(palette)) painPal[k] = '#f0f0f0';
+  if ('Y' in palette) painPal.Y = '#f04040';
+  if ('E' in palette) painPal.E = '#f04040';
+  const pain = drawPixels(rows, painPal, scale);
+  // Death: collapse toward the floor, increasingly blood-soaked.
+  const death = [0.75, 0.5, 0.25].map((f, i) => {
+    const c = makeCanvas(walk0.width, walk0.height);
+    const g = c.getContext('2d')!;
+    const dh = walk0.height * f;
+    g.drawImage(walk0, 0, walk0.height - dh, walk0.width, dh);
+    g.fillStyle = `rgba(140,10,10,${0.3 + i * 0.2})`;
+    g.globalCompositeOperation = 'source-atop';
+    g.fillRect(0, walk0.height - dh, walk0.width, dh);
+    return c;
+  });
+  return { walk: [walk0, walk1], attack, pain, death };
+}
+
+const IMP_ATTACK_ROWS = [
+  '....K......K....',
+  '....KK....KK....',
+  '...KKRK..KRKK...',
+  '...RRRRRRRRRR...',
+  '..RRRRRRRRRRRR..',
+  '..RRRYRRRRYRRR..',
+  '..RRRRRRRRRRRR..',
+  '.RRRRRWWWWRRRRR.',
+  '.RRRRRWWWWRRRRR.',
+  '..RRRRRKKRRRRR..',
+  '...RRRRRRRRRR...',
+  '....RRRRRRRR....',
+  '.....RR..RR.....',
+  '....RRR..RRR....',
+  '....KK....KK....',
+  '................',
+];
+
+const CURSED_ATTACK_ROWS = [
+  '....KK....KK....',
+  '...KKKKKKKKKK...',
+  '..KKVVVVVVVVKK..',
+  '.KVVVWWWWWWVVVK.',
+  '.KVWWKKKKKKWWVK.',
+  'KVVWKWYYYYKWKVVK',
+  'KVVWKWYYYYKWKVVK',
+  'KVVVWKKKKKWKVVVK',
+  'KVVVVWWWWWWVVVVK',
+  'KVVVVVVVVVVVVVVK',
+  'KVVVKKVVVVVKKVVVK',
+  'KVVVKKVVVVVKKVVVK',
+  '.KVVVVVVVVVVVVK.',
+  '..KVVVVVVVVVVK..',
+  '...KKVVVVVVKK...',
+  '.....KKKKKK.....',
+];
+
+export const demons: Record<'imp' | 'cursed' | 'boss', DemonFrames> = {
+  imp: makeFrames(
+    IMP_ROWS,
+    IMP_PALETTE,
+    2,
+    ['....RR....RR....', '...RRR....RRR...', '...KK......KK...'],
+    IMP_ATTACK_ROWS,
+  ),
+  cursed: makeFrames(
+    CURSED_ROWS,
+    CURSED_PALETTE,
+    2,
+    ['.....KKKKKK.....', '....KK....KK....', '...KK......KK...'],
+    CURSED_ATTACK_ROWS,
+  ),
+  boss: makeFrames(
+    BOSS_ROWS,
+    BOSS_PALETTE,
+    2,
+    ['..KRRRRRRRRRRRRRRRRK....', '..KKKRRRRRRRRRRRKKK.....', '....KKK........KKK......'],
+    BOSS_ROWS.map((r, i) => (i === 0 ? '...KK............KK.....' : r)),
+  ),
+};
+
+export function makeBloodParticle(): HTMLCanvasElement {
+  return drawPixels(['.RR.', 'RRRR', 'RRrR', '.RR.'], { R: '#b01818', r: '#701010' });
+}
+
 export const sprites = {
-  imp: drawPixels(IMP_ROWS, IMP_PALETTE, 2),
-  cursed: drawPixels(CURSED_ROWS, CURSED_PALETTE, 2),
+  imp: demons.imp.walk[0],
+  cursed: demons.cursed.walk[0],
 };
 
 // ---- Textures ----------------------------------------------------------

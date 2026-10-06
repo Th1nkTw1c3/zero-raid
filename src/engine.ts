@@ -14,9 +14,13 @@ export interface SpriteDraw {
   img: HTMLCanvasElement;
   label: string;
   cursed: boolean;
+  boss: boolean;
   dying: number; // 0 = alive, 0..1 death anim progress
   bob: number; // phase offset
   glow: number; // shield-hit flash 0..1
+  flipX: boolean;
+  scale: number; // 1 for imp/cursed, 2 for boss
+  yOff: number; // extra downward offset, fraction of sprite height
 }
 
 export interface Scene {
@@ -28,6 +32,7 @@ export interface Scene {
   wallTex: HTMLCanvasElement;
   doorTex: HTMLCanvasElement;
   sprites: SpriteDraw[];
+  particles: { x: number; y: number; z: number; img: HTMLCanvasElement }[];
   time: number;
 }
 
@@ -146,54 +151,78 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
 
     const screenX = (VIEW_W / 2) * (1 + tx / ty);
     const bob = Math.sin(s.time * 3 + sp.bob) * (VIEW_H / ty) * 0.03;
-    let size = (VIEW_H / ty) * 0.9;
-    let hSize = size;
-    if (sp.dying > 0) {
-      hSize = size * (1 - sp.dying * 0.85); // collapse into the floor
-    }
+    const size = (VIEW_H / ty) * 0.9 * (sp.scale || 1);
+    const hSize = size;
     const drawW = size;
     const x0 = Math.floor(screenX - drawW / 2);
     const x1 = Math.ceil(screenX + drawW / 2);
-    const yTop = horizon + (VIEW_H / ty) * 0.5 - hSize + bob;
-    const yBot = horizon + (VIEW_H / ty) * 0.5 + bob;
+    const yTop = horizon + (VIEW_H / ty) * 0.5 - hSize + bob + sp.yOff * size;
 
     // Per-column slice draw for correct wall occlusion.
     const imgW = sp.img.width;
+    let visL = VIEW_W;
+    let visR = -1;
     for (let col = Math.max(0, x0); col < Math.min(VIEW_W, x1); col++) {
       if (zbuf[col] < ty) continue;
-      const texX = Math.floor(((col - x0) / drawW) * imgW);
+      let texX = Math.floor(((col - x0) / drawW) * imgW);
+      if (sp.flipX) texX = imgW - 1 - texX;
       if (texX < 0 || texX >= imgW) continue;
       ctx.drawImage(sp.img, texX, 0, 1, sp.img.height, col, yTop, 1, hSize);
+      if (col < visL) visL = col;
+      if (col > visR) visR = col;
     }
+    if (visR < visL) continue; // fully occluded or off-screen
+    const visW = visR - visL + 1;
 
-    // Cursed demons get a shield shimmer.
-    if (sp.cursed && sp.dying === 0) {
+    // Cursed demons get a shield shimmer (only over the visible span).
+    if (sp.cursed && sp.dying === 0 && visW > 2) {
       ctx.strokeStyle = `rgba(120,80,255,${0.35 + 0.25 * Math.sin(s.time * 5)})`;
       ctx.lineWidth = 1;
-      ctx.strokeRect(x0 - 2, yTop - 2, drawW + 4, hSize + 4);
+      ctx.strokeRect(visL - 1.5, yTop - 2, visW + 3, hSize + 4);
     }
     // Shield-hit flash.
     if (sp.glow > 0) {
       ctx.fillStyle = `rgba(140,100,255,${sp.glow * 0.5})`;
-      ctx.fillRect(x0, yTop, drawW, hSize);
+      ctx.fillRect(visL, yTop, visW, hSize);
     }
     // Death fade.
     if (sp.dying > 0) {
       ctx.fillStyle = `rgba(120,0,0,${sp.dying * 0.5})`;
-      ctx.fillRect(x0, yTop, drawW, hSize);
+      ctx.fillRect(visL, yTop, visW, hSize);
     }
 
     // Subject label floats overhead — the email IS the monster.
     if (sp.dying === 0 && ty < MAX_DEPTH) {
-      const fs = Math.max(5, Math.min(9, 26 / ty));
+      const fs = Math.max(5, Math.min(9, 26 / ty)) + (sp.boss ? 1 : 0);
       ctx.font = `${fs}px monospace`;
       ctx.textAlign = 'center';
-      const label = sp.label.length > 26 ? `${sp.label.slice(0, 25)}…` : sp.label;
+      let label = sp.label.length > 26 ? `${sp.label.slice(0, 25)}…` : sp.label;
+      if (sp.boss) label = `☠ ${label}`;
       const ly = yTop - 4;
       ctx.fillStyle = 'rgba(0,0,0,0.7)';
       ctx.fillText(label, screenX + 1, ly + 1);
-      ctx.fillStyle = sp.cursed ? '#c090ff' : '#ffd040';
+      ctx.fillStyle = sp.boss ? '#f04040' : sp.cursed ? '#c090ff' : '#ffd040';
       ctx.fillText(label, screenX, ly);
+    }
+  }
+
+  // Blood particles — tiny billboards, z is height 0..1 above the floor.
+  for (const p of s.particles) {
+    const relX = p.x - s.px;
+    const relY = p.y - s.py;
+    const tx = invDet * (dirY * relX - dirX * relY);
+    const ty = invDet * (-planeY * relX + planeX * relY);
+    if (ty < 0.2) continue;
+    const screenX = (VIEW_W / 2) * (1 + tx / ty);
+    const size = (VIEW_H / ty) * 0.08;
+    const yTop = horizon + (VIEW_H / ty) * 0.5 - p.z * (VIEW_H / ty) * 0.9 - size;
+    const x0 = Math.floor(screenX - size / 2);
+    const x1 = Math.ceil(screenX + size / 2);
+    for (let col = Math.max(0, x0); col < Math.min(VIEW_W, x1); col++) {
+      if (zbuf[col] < ty) continue;
+      const texX = Math.floor(((col - x0) / size) * p.img.width);
+      if (texX < 0 || texX >= p.img.width) continue;
+      ctx.drawImage(p.img, texX, 0, 1, p.img.height, col, yTop, 1, size);
     }
   }
 }
@@ -242,14 +271,30 @@ export function targetsInCone(
   return out;
 }
 
-function lineOfSight(s: Scene, dist: number, ang: number): boolean {
+// Free-standing LoS between two points (enemy AI wake checks use this too).
+export function hasLineOfSight(
+  map: LevelMap,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  doorOpen: boolean,
+): boolean {
+  const dist = Math.hypot(bx - ax, by - ay);
   const steps = Math.ceil(dist / 0.1);
-  const rdx = Math.cos(s.dir + ang);
-  const rdy = Math.sin(s.dir + ang);
+  if (steps < 2) return true;
+  const rdx = (bx - ax) / dist;
+  const rdy = (by - ay) / dist;
   for (let i = 1; i < steps; i++) {
     const t = (i / steps) * dist;
-    const c = cellAt(s.map, s.px + rdx * t, s.py + rdy * t);
-    if (c === '#' || (c === 'D' && !s.doorOpen)) return false;
+    const c = cellAt(map, ax + rdx * t, ay + rdy * t);
+    if (c === '#' || (c === 'D' && !doorOpen)) return false;
   }
   return true;
+}
+
+function lineOfSight(s: Scene, dist: number, ang: number): boolean {
+  const rdx = Math.cos(s.dir + ang);
+  const rdy = Math.sin(s.dir + ang);
+  return hasLineOfSight(s.map, s.px, s.py, s.px + rdx * dist, s.py + rdy * dist, s.doorOpen);
 }

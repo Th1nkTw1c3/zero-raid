@@ -1,6 +1,6 @@
 import { render, pickTarget, targetsInCone, VIEW_W, VIEW_H, type Scene } from './engine';
 import { makeLevel, isSolid, cellAt, type LevelMap } from './map';
-import { sprites, makeWallTexture, makeDoorTexture } from './sprites';
+import { demons, makeBloodParticle, makeWallTexture, makeDoorTexture } from './sprites';
 import { drawHud, drawWeapon, drawCenterText, HUD_BAR_H, WEAPON_META, type Weapon } from './hud';
 import { sfx } from './sfx';
 import { api } from './net';
@@ -26,10 +26,15 @@ window.addEventListener('resize', fitCanvas);
 fitCanvas();
 
 // ---------------------------------------------------------------- state ---
-type Screen = 'boot' | 'title' | 'play' | 'reply' | 'trans' | 'win' | 'dead';
+type Screen = 'boot' | 'title' | 'play' | 'reply' | 'trans' | 'win' | 'dead' | 'tally';
+
+type EnemyKind = 'imp' | 'cursed' | 'boss';
+type EnemyState = 'dormant' | 'wander' | 'chase' | 'windup' | 'attack' | 'pain';
 
 interface Enemy {
   msg: UnreadMsg;
+  kind: EnemyKind;
+  state: EnemyState;
   x: number;
   y: number;
   cursed: boolean;
@@ -37,8 +42,33 @@ interface Enemy {
   dead: boolean;
   glow: number;
   bob: number;
-  attackT: number;
+  stateT: number;
+  animT: number;
+  frame: number;
+  flipX: boolean;
+  lastX: number;
+  strafeDir: 1 | -1;
+  strafeT: number;
+  growlT: number;
   sawT: number;
+}
+
+interface Particle {
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  life: number;
+  img: HTMLCanvasElement;
+}
+
+interface LevelStats {
+  kills: number;
+  replies: number;
+  stars: number;
+  time: number;
 }
 
 interface Banner {
@@ -60,7 +90,15 @@ const G = {
   dir: -Math.PI / 2,
   enemies: [] as Enemy[],
   pending: [] as UnreadMsg[],
-  spawnT: 0,
+  waves: [] as UnreadMsg[][],
+  wavesTriggered: [false, false, false],
+  bossMsg: null as UnreadMsg | null,
+  bossSpawned: false,
+  particles: [] as Particle[],
+  shakeT: 0,
+  levelStats: { kills: 0, replies: 0, stars: 0, time: 0 } as LevelStats,
+  levelT0: 0,
+  bestStreak: 0,
   weapon: 'pistol' as Weapon,
   fireT: 0,
   fireAnim: 0,
@@ -121,11 +159,26 @@ function loadLevel(i: number) {
   G.py = G.map.spawn.y;
   G.dir = -Math.PI / 2;
   G.enemies = [];
-  G.pending = [...G.rooms[i].unread];
+  G.particles = [];
   G.doorOpen = false;
-  G.spawnT = 0;
+  G.shakeT = 0;
+  G.levelStats = { kills: 0, replies: 0, stars: 0, time: 0 };
+  G.levelT0 = performance.now() / 1000;
+  G.wavesTriggered = [false, false, false];
   const room = G.rooms[i];
-  banner(`LEVEL ${i + 1}: ${room.name}`, '#e06030', 3);
+  // Boss waits at the end; everyone else becomes corridor ambush waves.
+  const unread = [...room.unread].sort((a, b) => Number(a.boss) - Number(b.boss));
+  G.bossMsg = unread.find((m) => m.boss) || null;
+  G.bossSpawned = false;
+  const fodder = unread.filter((m) => !m.boss);
+  G.waves = [
+    fodder.slice(0, Math.ceil(fodder.length / 3)),
+    fodder.slice(Math.ceil(fodder.length / 3), Math.ceil((fodder.length * 2) / 3)),
+    fodder.slice(Math.ceil((fodder.length * 2) / 3)),
+  ];
+  G.pending = unread;
+  banner(`LEVEL ${i + 1}: ${room.name} — ${unread.length} UNREAD`, '#e06030', 3);
+  if (G.bossMsg) banner('something important waits at the end…', '#908880', 3.5);
   if (G.pending.length === 0) {
     G.doorOpen = true;
     banner('ALREADY CLEAN — HEAD FOR THE DOOR', '#40e060', 3);
@@ -136,22 +189,20 @@ function aliveCount(): number {
   return G.enemies.filter((e) => !e.dead && e.dying === 0).length;
 }
 
-function roomMaxConcurrent(): number {
-  return Math.min(6 + G.level, 10);
-}
-
-function spawnEnemy(msg: UnreadMsg) {
+function spawnEnemy(msg: UnreadMsg, points: { x: number; y: number }[]) {
   const map = G.map!;
-  const free = map.spawnPoints.filter(
+  const free = points.filter(
     (p) =>
       cellAt(map, p.x, p.y) === '.' &&
-      Math.hypot(p.x - G.px, p.y - G.py) > 3 &&
       !G.enemies.some((e) => !e.dead && Math.hypot(e.x - p.x, e.y - p.y) < 1),
   );
   if (!free.length) return false;
   const p = free[Math.floor(Math.random() * free.length)];
+  const kind: EnemyKind = msg.boss ? 'boss' : msg.needsReply ? 'cursed' : 'imp';
   G.enemies.push({
     msg,
+    kind,
+    state: 'chase',
     x: p.x,
     y: p.y,
     cursed: msg.needsReply,
@@ -159,18 +210,55 @@ function spawnEnemy(msg: UnreadMsg) {
     dead: false,
     glow: 0,
     bob: Math.random() * Math.PI * 2,
-    attackT: 0,
+    stateT: 0,
+    animT: 0,
+    frame: 0,
+    flipX: false,
+    lastX: p.x,
+    strafeDir: Math.random() < 0.5 ? 1 : -1,
+    strafeT: 0.8 + Math.random() * 0.6,
+    growlT: 1 + Math.random() * 2,
     sawT: 0,
   });
+  const pi = G.pending.findIndex((m) => m.id === msg.id);
+  if (pi >= 0) G.pending.splice(pi, 1);
   return true;
+}
+
+const bloodImg = makeBloodParticle();
+
+function spawnBlood(e: Enemy, n: number) {
+  for (let i = 0; i < n; i++) {
+    G.particles.push({
+      x: e.x,
+      y: e.y,
+      z: 0.5,
+      vx: (Math.random() * 2 - 1) * 1.5,
+      vy: (Math.random() * 2 - 1) * 1.5,
+      vz: 1 + Math.random(),
+      life: 0.7,
+      img: bloodImg,
+    });
+  }
 }
 
 // --------------------------------------------------------------- actions --
 function doAction(enemy: Enemy, action: RaidAction) {
   enemy.dying = 0.0001;
-  sfx.demonDie();
+  const boss = enemy.kind === 'boss';
+  if (boss) {
+    sfx.bossDie();
+    G.shakeT = 0.4;
+    spawnBlood(enemy, 30);
+  } else {
+    sfx.demonDie();
+    spawnBlood(enemy, 10);
+  }
   G.streak++;
-  G.score += SCORE[action];
+  G.bestStreak = Math.max(G.bestStreak, G.streak);
+  G.score += boss && action === 'star' ? 50 : SCORE[action];
+  G.levelStats.kills++;
+  if (action === 'star') G.levelStats.stars++;
   G.actions.push(Date.now());
   api
     .modify(enemy.msg.id, action)
@@ -198,9 +286,19 @@ async function castSpell(enemy: Enemy) {
   }
   G.busy++;
   enemy.dying = 0.0001;
-  sfx.explosion();
+  const boss = enemy.kind === 'boss';
+  if (boss) {
+    sfx.bossDie();
+    G.shakeT = 0.4;
+    spawnBlood(enemy, 30);
+  } else {
+    sfx.explosion();
+    spawnBlood(enemy, 10);
+  }
   G.streak++;
-  G.score += SCORE.reply;
+  G.bestStreak = Math.max(G.bestStreak, G.streak);
+  G.score += boss ? 100 : SCORE.reply;
+  G.levelStats.replies++;
   G.actions.push(Date.now());
   api
     .reply(enemy.msg, body)
@@ -218,6 +316,25 @@ async function castSpell(enemy: Enemy) {
     .finally(() => G.busy--);
 }
 
+// A mundane shot bounces off a shielded demon — it recoils in pain.
+function shieldBounce(e: Enemy) {
+  e.state = 'pain';
+  e.stateT = 0.35;
+  const dx = e.x - G.px;
+  const dy = e.y - G.py;
+  const d = Math.hypot(dx, dy) || 1;
+  const nx = e.x + (dx / d) * 0.4;
+  const ny = e.y + (dy / d) * 0.4;
+  if (!isSolid(G.map!, nx, e.y, G.doorOpen)) e.x = nx;
+  if (!isSolid(G.map!, e.x, ny, G.doorOpen)) e.y = ny;
+  banner(
+    e.kind === 'boss'
+      ? 'THE BOSS DEMANDS AN ANSWER — [4] REPLY OR [3] STAR'
+      : 'REPLY REQUIRED — HELLFIRE [4] OR CHAINSAW-STAR [3]',
+    e.kind === 'boss' ? '#f04040' : '#c090ff',
+  );
+}
+
 function fire() {
   if (G.fireT > 0 || !G.map) return;
   const scene = sceneObj();
@@ -232,7 +349,7 @@ function fire() {
       if (e.cursed) {
         e.glow = 1;
         sfx.shieldPing();
-        banner('REPLY REQUIRED — HELLFIRE [4] OR CHAINSAW-STAR [3]', '#c090ff');
+        shieldBounce(e);
         return;
       }
       doAction(e, 'archive');
@@ -248,6 +365,7 @@ function fire() {
         if (e.cursed) {
           e.glow = 1;
           sfx.shieldPing();
+          shieldBounce(e);
         } else {
           doAction(e, 'trash');
         }
@@ -320,46 +438,122 @@ function update(dt: number, now: number) {
 
   // Stepped through the exit?
   if (G.doorOpen && cellAt(G.map, G.px, G.py) === 'D') {
-    nextLevel();
+    G.levelStats.time = performance.now() / 1000 - G.levelT0;
+    G.screen = 'tally';
+    document.exitPointerLock?.();
     return;
   }
 
-  // Spawning — trickle pending unread in as demons.
-  G.spawnT -= dt;
-  if (G.pending.length && G.spawnT <= 0 && aliveCount() < roomMaxConcurrent()) {
-    const msg = G.pending.shift()!;
-    if (spawnEnemy(msg)) G.spawnT = 0.6;
-    else G.pending.unshift(msg);
+  // Ambush waves — crossing each zone trigger springs the wave ahead.
+  G.map.zones.forEach((z, k) => {
+    if (G.wavesTriggered[k] || G.py >= z.y) return;
+    G.wavesTriggered[k] = true;
+    sfx.alert();
+    for (const msg of G.waves[k]) spawnEnemy(msg, z.spawnPoints);
+  });
+
+  // The boss waits in the arena.
+  if (G.bossMsg && !G.bossSpawned && G.py < G.map.arena.y) {
+    G.bossSpawned = true;
+    sfx.bossRoar();
+    if (spawnEnemy(G.bossMsg, G.map.arena.spawnPoints)) {
+      banner(`BOSS: ${G.bossMsg.subject}`, '#f04040', 3.5);
+    }
   }
 
-  // Enemy AI — drift toward the player, maul on contact.
-  const aggroR = 4.5 + G.level * 0.7;
-  const speed = 0.28 + G.level * 0.1;
+  // Particles — ballistic blood.
+  for (const p of G.particles) {
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+    p.vz -= 4 * dt;
+    if (p.z < 0) {
+      p.z = 0;
+      p.vz = 0;
+    }
+  }
+  G.particles = G.particles.filter((p) => p.life > 0);
+  G.shakeT = Math.max(0, G.shakeT - dt);
+
+  // Enemy AI state machine.
+  const speed = 0.55 + G.level * 0.12;
   for (const e of G.enemies) {
     if (e.dead) continue;
     e.glow = Math.max(0, e.glow - dt * 3);
-    e.attackT -= dt;
     if (e.dying > 0) {
-      e.dying += dt * 2.2;
+      e.dying += dt / 0.6;
       if (e.dying >= 1) e.dead = true;
       continue;
     }
     const dx = G.px - e.x;
     const dy = G.py - e.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < aggroR && dist > 0.55) {
-      const nx = e.x + (dx / dist) * speed * dt;
-      const ny = e.y + (dy / dist) * speed * dt;
+    const dist = Math.hypot(dx, dy) || 1;
+    const moveSpeed = e.kind === 'boss' ? 0.45 : speed;
+    e.stateT -= dt;
+
+    if (e.state === 'chase') {
+      // Zig-zag approach: toward the player + a weaving perpendicular strafe.
+      e.strafeT -= dt;
+      if (e.strafeT <= 0) {
+        e.strafeDir = (e.strafeDir * -1) as 1 | -1;
+        e.strafeT = 0.8 + Math.random() * 0.6;
+      }
+      let vx = dx / dist + (-dy / dist) * e.strafeDir * 0.5;
+      let vy = dy / dist + (dx / dist) * e.strafeDir * 0.5;
+      // Separation from other live demons.
+      for (const o of G.enemies) {
+        if (o === e || o.dead || o.dying > 0) continue;
+        const ox = e.x - o.x;
+        const oy = e.y - o.y;
+        const od = Math.hypot(ox, oy);
+        if (od < 0.6 && od > 0.001) {
+          vx += (ox / od) * 0.8;
+          vy += (oy / od) * 0.8;
+        }
+      }
+      const vl = Math.hypot(vx, vy) || 1;
+      const nx = e.x + (vx / vl) * moveSpeed * dt;
+      const ny = e.y + (vy / vl) * moveSpeed * dt;
       if (!isSolid(G.map, nx, e.y, G.doorOpen)) e.x = nx;
       if (!isSolid(G.map, e.x, ny, G.doorOpen)) e.y = ny;
+      e.growlT -= dt;
+      if (e.growlT <= 0) {
+        e.growlT = 2.5 + Math.random() * 1.5;
+        if (dist < 7) sfx.growl();
+      }
+      if (dist < 1.0) {
+        e.state = 'windup';
+        e.stateT = 0.45;
+      }
+    } else if (e.state === 'windup') {
+      if (e.stateT <= 0) {
+        e.state = 'attack';
+        e.stateT = 0.9;
+        if (dist < 1.3) {
+          if (G.streak > 0) banner('STREAK BROKEN', '#f04030', 1.5);
+          G.streak = 0;
+          G.hurtT = 0.5;
+          sfx.hurt();
+          // Lunge into the player.
+          const nx = e.x + (dx / dist) * 0.3;
+          const ny = e.y + (dy / dist) * 0.3;
+          if (!isSolid(G.map, nx, e.y, G.doorOpen)) e.x = nx;
+          if (!isSolid(G.map, e.x, ny, G.doorOpen)) e.y = ny;
+        }
+      }
+    } else if (e.state === 'attack' || e.state === 'pain') {
+      if (e.stateT <= 0) e.state = 'chase';
     }
-    if (dist < 0.8 && e.attackT <= 0) {
-      e.attackT = 1.6;
-      if (G.streak > 0) banner('STREAK BROKEN', '#f04030', 1.5);
-      G.streak = 0;
-      G.hurtT = 0.5;
-      sfx.hurt();
+
+    // Walk animation + facing.
+    if (e.state === 'chase') {
+      e.animT += dt * moveSpeed * 4;
+      e.frame = Math.floor(e.animT) % 2;
     }
+    const ddx = e.x - e.lastX;
+    if (Math.abs(ddx) > 1e-4) e.flipX = ddx < 0;
+    e.lastX = e.x;
   }
   G.enemies = G.enemies.filter((e) => !e.dead);
 
@@ -380,8 +574,14 @@ function update(dt: number, now: number) {
     for (const e of G.enemies) e.sawT = Math.max(0, e.sawT - dt * 2);
   }
 
-  // Room cleared?
-  if (!G.doorOpen && !G.pending.length && aliveCount() === 0) {
+  // Room cleared? All waves sprung, boss dealt with, nothing left breathing.
+  if (
+    !G.doorOpen &&
+    G.wavesTriggered.every(Boolean) &&
+    (!G.bossMsg || G.bossSpawned) &&
+    !G.pending.length &&
+    aliveCount() === 0
+  ) {
     G.doorOpen = true;
     G.cleared.add(G.level);
     sfx.door();
@@ -413,16 +613,35 @@ function sceneObj(): Scene {
     wallTex,
     doorTex,
     time: performance.now() / 1000,
-    sprites: G.enemies.map((e) => ({
-      x: e.x,
-      y: e.y,
-      img: e.cursed ? sprites.cursed : sprites.imp,
-      label: e.msg.subject,
-      cursed: e.cursed,
-      dying: e.dying,
-      bob: e.bob,
-      glow: e.glow,
-    })),
+    sprites: G.enemies.map((e) => {
+      const f = demons[e.kind];
+      let img = f.walk[e.frame];
+      let yOff = 0;
+      if (e.dying > 0) {
+        const di = Math.min(2, Math.floor(e.dying * 3));
+        img = f.death[di];
+        yOff = di * 0.1;
+      } else if (e.state === 'pain') {
+        img = f.pain;
+      } else if (e.state === 'windup' || e.state === 'attack') {
+        img = f.attack;
+      }
+      return {
+        x: e.x,
+        y: e.y,
+        img,
+        label: e.msg.subject,
+        cursed: e.cursed,
+        boss: e.kind === 'boss',
+        dying: e.dying,
+        bob: e.bob,
+        glow: e.glow,
+        flipX: e.flipX,
+        scale: e.kind === 'boss' ? 2 : 1,
+        yOff,
+      };
+    }),
+    particles: G.particles.map((p) => ({ x: p.x, y: p.y, z: p.z, img: p.img })),
   };
 }
 
@@ -444,13 +663,36 @@ function renderFrame() {
     drawCenterText(ctx, [
       { text: '★ INBOX ZERO ★', color: '#f0d040' },
       { text: `FINAL SCORE ${G.score}`, color: '#e8e0d0' },
-      { text: `${G.actions.length} actions/min · best streak this run`, color: '#908880' },
+      { text: `${G.actions.length} actions/min · best streak ${G.bestStreak}`, color: '#908880' },
+      {
+        text: `${G.rooms.reduce((n, r) => n + r.unread.length, 0)} unread remain across the dungeon`,
+        color: '#908880',
+      },
       { text: 'PRESS R TO RAID AGAIN', color: '#40e060' },
     ]);
     return;
   }
 
+  if (G.screen === 'tally') {
+    const s = G.levelStats;
+    drawCenterText(ctx, [
+      { text: `LEVEL ${G.level + 1} CLEARED — ${G.rooms[G.level]?.name || ''}`, color: '#e06030' },
+      { text: `DEMONS SLAIN   ${s.kills}`, color: '#e8e0d0' },
+      { text: `REPLIES SENT   ${s.replies}`, color: '#c090ff' },
+      { text: `STARS          ${s.stars}`, color: '#f0d040' },
+      { text: `TIME           ${s.time.toFixed(1)}s`, color: '#e8e0d0' },
+      { text: `BEST STREAK    ${G.bestStreak}`, color: '#f04030' },
+      { text: 'PRESS ENTER', color: '#40e060' },
+    ]);
+    return;
+  }
+
+  ctx.save();
+  if (G.shakeT > 0) {
+    ctx.translate((Math.random() * 2 - 1) * 2 * (G.shakeT / 0.4), (Math.random() * 2 - 1) * 2 * (G.shakeT / 0.4));
+  }
   render(ctx, sceneObj());
+  ctx.restore();
   drawWeapon(ctx, G.weapon, G.fireAnim, G.weapon === 'chainsaw' && G.mouseDown, performance.now() / 1000);
   drawHud(ctx, {
     streak: G.streak,
@@ -542,6 +784,10 @@ document.addEventListener('keydown', (e) => {
   }
   if (G.screen === 'win' && k === 'r') {
     window.location.reload();
+    return;
+  }
+  if (G.screen === 'tally') {
+    if (k === 'enter') nextLevel();
     return;
   }
   if (G.screen !== 'play') return;
