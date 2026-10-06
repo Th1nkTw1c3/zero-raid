@@ -51,12 +51,36 @@ export const sfx = {
     audio();
   },
   pistol() {
-    noiseBurst(0.09, 2500, 0.4);
-    tone(220, 60, 0.09, 0.2, 'square');
+    noiseBurst(0.02, 6000, 0.3, 'highpass');
+    noiseBurst(0.08, 3000, 0.45);
+    tone(180, 50, 0.1, 0.25, 'square');
+    const a = audio();
+    if (a) setTimeout(() => noiseBurst(0.09, 1200, 0.13), 90); // echo tail
   },
   shotgun() {
-    noiseBurst(0.28, 900, 0.7);
-    tone(140, 40, 0.25, 0.35, 'sawtooth');
+    noiseBurst(0.3, 700, 0.75);
+    tone(110, 35, 0.3, 0.4, 'sawtooth');
+    const a = audio();
+    if (a) setTimeout(() => noiseBurst(0.25, 500, 0.28), 120);
+  },
+  pump1() {
+    tone(900, 300, 0.05, 0.2, 'triangle');
+    noiseBurst(0.03, 2500, 0.15);
+  },
+  pump2() {
+    tone(500, 900, 0.05, 0.2, 'triangle');
+    noiseBurst(0.03, 3000, 0.15);
+  },
+  clank() {
+    tone(1200, 400, 0.08, 0.3, 'triangle');
+    noiseBurst(0.04, 4000, 0.2);
+  },
+  blink() {
+    tone(1500, 300, 0.15, 0.12, 'sine');
+  },
+  doorSlide() {
+    noiseBurst(0.6, 300, 0.2);
+    tone(70, 90, 0.6, 0.15, 'sawtooth');
   },
   chainsawStart() {
     const a = audio();
@@ -75,6 +99,11 @@ export const sfx = {
     osc.start();
     lfo.start();
     chainsawNode = { osc, gain, lfo };
+  },
+  chainsawRev(on: boolean) {
+    const a = audio();
+    if (!a || !chainsawNode) return;
+    chainsawNode.osc.frequency.setTargetAtTime(on ? 120 : 75, a.currentTime, 0.05);
   },
   chainsawStop() {
     if (!chainsawNode) return;

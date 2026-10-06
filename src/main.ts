@@ -1,7 +1,34 @@
-import { render, pickTarget, targetsInCone, VIEW_W, VIEW_H, type Scene } from './engine';
-import { makeLevel, isSolid, cellAt, type LevelMap } from './map';
-import { demons, makeBloodParticle, makeWallTexture, makeDoorTexture } from './sprites';
-import { drawHud, drawWeapon, drawCenterText, HUD_BAR_H, WEAPON_META, type Weapon } from './hud';
+import {
+  render,
+  pickTarget,
+  pickTargetAt,
+  castRay,
+  VIEW_W,
+  VIEW_H,
+  type Scene,
+  type SceneGeom,
+} from './engine';
+import { makeLevel, isSolid, cellAt, roomAt, type LevelMap } from './map';
+import {
+  demons,
+  makeBloodParticle,
+  makeDot,
+  makeFireball,
+  makeWallTexture,
+  makeDoorTexture,
+  makeInnerDoorTexture,
+} from './sprites';
+import { weaponFrames, muzzleFlashFrames, casingImg } from './weapons';
+import {
+  drawHud,
+  drawWeapon,
+  drawCenterText,
+  drawAutomap,
+  HUD_BAR_H,
+  WEAPON_META,
+  type Weapon,
+  type VmDraw,
+} from './hud';
 import { sfx } from './sfx';
 import { api } from './net';
 import { showReplyOverlay } from './ui';
@@ -28,16 +55,19 @@ fitCanvas();
 // ---------------------------------------------------------------- state ---
 type Screen = 'boot' | 'title' | 'play' | 'reply' | 'trans' | 'win' | 'dead' | 'tally';
 
-type EnemyKind = 'imp' | 'cursed' | 'boss';
-type EnemyState = 'dormant' | 'wander' | 'chase' | 'windup' | 'attack' | 'pain';
+type EnemyKind = 'imp' | 'swarmer' | 'bot' | 'phantom' | 'cursed' | 'boss';
+type EnemyState = 'chase' | 'windup' | 'attack' | 'pain';
 
 interface Enemy {
   msg: UnreadMsg;
   kind: EnemyKind;
   state: EnemyState;
+  roomId: number;
   x: number;
   y: number;
   cursed: boolean;
+  hp: number;
+  maxHp: number;
   dying: number;
   dead: boolean;
   glow: number;
@@ -50,6 +80,7 @@ interface Enemy {
   strafeDir: 1 | -1;
   strafeT: number;
   growlT: number;
+  blinkT: number;
   sawT: number;
 }
 
@@ -61,6 +92,24 @@ interface Particle {
   vy: number;
   vz: number;
   life: number;
+  maxLife: number;
+  size: number;
+  img: HTMLCanvasElement;
+  grav: number;
+}
+
+interface Casing {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
+interface Projectile {
+  x: number;
+  y: number;
+  z: number;
+  target: Enemy;
   img: HTMLCanvasElement;
 }
 
@@ -71,12 +120,6 @@ interface LevelStats {
   time: number;
 }
 
-interface Banner {
-  text: string;
-  color: string;
-  until: number;
-}
-
 const G = {
   screen: 'boot' as Screen,
   status: null as StatusResponse | null,
@@ -84,40 +127,62 @@ const G = {
   demo: false,
   level: 0,
   map: null as LevelMap | null,
-  doorOpen: false,
+  exitOpen: false,
+  doorState: new Map<number, { open: number; target: 0 | 1 }>(),
+  roomBatches: new Map<number, UnreadMsg[]>(),
+  roomSpawned: new Set<number>(),
+  roomCleared: new Set<number>(),
+  roomVisited: new Set<number>(),
+  currentRoom: -1,
   px: 0,
   py: 0,
   dir: -Math.PI / 2,
   enemies: [] as Enemy[],
   pending: [] as UnreadMsg[],
-  waves: [] as UnreadMsg[][],
-  wavesTriggered: [false, false, false],
-  bossMsg: null as UnreadMsg | null,
-  bossSpawned: false,
   particles: [] as Particle[],
-  shakeT: 0,
-  levelStats: { kills: 0, replies: 0, stars: 0, time: 0 } as LevelStats,
-  levelT0: 0,
-  bestStreak: 0,
+  casings: [] as Casing[],
+  projectile: null as Projectile | null,
+  castLock: false,
   weapon: 'pistol' as Weapon,
   fireT: 0,
-  fireAnim: 0,
+  vmSeq: [] as string[], // pending viewmodel stage names
+  vmT: 0,
+  vmKick: 0,
+  vmBobT: 0,
+  switchT: 0, // >0 lowering, <0 raising
+  switchTo: null as Weapon | null,
   mouseDown: false,
   streak: 0,
   score: 0,
   actions: [] as number[],
   hurtT: 0,
-  banners: [] as Banner[],
+  hitmarkT: 0,
+  hitmarkShield: false,
+  light: 0,
+  pitch: 0,
+  shakeT: 0,
+  mapHeld: false,
+  banners: [] as { text: string; color: string; until: number }[],
   transT: 0,
   cleared: new Set<number>(),
   busy: 0,
   keys: new Set<string>(),
   mouseDx: 0,
-  msg: '', // boot error
+  levelStats: { kills: 0, replies: 0, stars: 0, time: 0 } as LevelStats,
+  levelT0: 0,
+  bestStreak: 0,
+  msg: '',
 };
 
 const wallTex = makeWallTexture();
 const doorTex = makeDoorTexture();
+const innerDoorTex = makeInnerDoorTexture();
+const bloodImg = makeBloodParticle();
+const dustImg = makeDot('#a0a0a0');
+const holeImg = makeDot('#101010');
+const sparkImg = makeDot('#f08020', '#f0c030');
+const tealImg = makeDot('#3aa0a0', '#c0f0f0');
+const fireballImg = makeFireball();
 
 const SCORE: Record<RaidAction | 'reply', number> = {
   archive: 10,
@@ -125,6 +190,36 @@ const SCORE: Record<RaidAction | 'reply', number> = {
   star: 25,
   reply: 40,
 };
+
+// Per-kind movement flavor. speed/strafe are multipliers on the base.
+const KIND: Record<
+  EnemyKind,
+  { speed: number; strafeAmp: number; strafeMin: number; strafeMax: number; windup: number; scale: number; hp: number }
+> = {
+  imp: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 1, hp: 1 },
+  swarmer: { speed: 1.7, strafeAmp: 0.9, strafeMin: 0.3, strafeMax: 0.6, windup: 0.25, scale: 0.6, hp: 1 },
+  bot: { speed: 0.7, strafeAmp: 0, strafeMin: 99, strafeMax: 99, windup: 0.6, scale: 1, hp: 2 },
+  phantom: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 1, hp: 1 },
+  cursed: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 1, hp: 1 },
+  boss: { speed: 0.45, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.6, scale: 2, hp: 1 },
+};
+
+// Kind roll for plain mail by level (deterministic per message id).
+function rollKind(msg: UnreadMsg, level: number): EnemyKind {
+  if (msg.boss) return 'boss';
+  if (msg.needsReply) return 'cursed';
+  let h = 0;
+  for (let i = 0; i < msg.id.length; i++) h = (h * 31 + msg.id.charCodeAt(i)) >>> 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x45d9f3b) >>> 0;
+  h ^= h >>> 16;
+  h = h >>> 0;
+  const r = (h % 100) / 100;
+  if (level <= 0) return 'imp';
+  if (level === 1) return r < 0.7 ? 'swarmer' : 'imp';
+  if (level === 2) return r < 0.6 ? 'bot' : r < 0.85 ? 'swarmer' : 'imp';
+  return r < 0.6 ? 'phantom' : r < 0.85 ? 'bot' : 'imp';
+}
 
 // ---------------------------------------------------------------- boot ----
 async function boot() {
@@ -152,6 +247,23 @@ function banner(text: string, color = '#f0d040', secs = 2.2) {
 }
 
 // ------------------------------------------------------------ level load --
+function solid(x: number, y: number): boolean {
+  return isSolid(G.map!, x, y, doorOpen, G.exitOpen);
+}
+function doorOpen(id: number): number {
+  return G.doorState.get(id)?.open ?? 0;
+}
+function geom(): SceneGeom {
+  return { map: G.map!, exitOpen: G.exitOpen, doorOpen };
+}
+
+function setDoor(id: number, target: 0 | 1) {
+  const st = G.doorState.get(id);
+  if (!st || st.target === target) return;
+  st.target = target;
+  if (target === 1 && st.open < 0.8) sfx.doorSlide();
+}
+
 function loadLevel(i: number) {
   G.level = i;
   G.map = makeLevel(i);
@@ -160,28 +272,50 @@ function loadLevel(i: number) {
   G.dir = -Math.PI / 2;
   G.enemies = [];
   G.particles = [];
-  G.doorOpen = false;
+  G.casings = [];
+  G.projectile = null;
+  G.castLock = false;
+  G.exitOpen = false;
   G.shakeT = 0;
+  G.light = 0;
+  G.pitch = 0;
   G.levelStats = { kills: 0, replies: 0, stars: 0, time: 0 };
   G.levelT0 = performance.now() / 1000;
-  G.wavesTriggered = [false, false, false];
+  G.roomSpawned = new Set();
+  G.roomCleared = new Set();
+  G.roomVisited = new Set();
+
   const room = G.rooms[i];
-  // Boss waits at the end; everyone else becomes corridor ambush waves.
   const unread = [...room.unread].sort((a, b) => Number(a.boss) - Number(b.boss));
-  G.bossMsg = unread.find((m) => m.boss) || null;
-  G.bossSpawned = false;
+  const bossMsg = unread.find((m) => m.boss) || null;
   const fodder = unread.filter((m) => !m.boss);
-  G.waves = [
-    fodder.slice(0, Math.ceil(fodder.length / 3)),
-    fodder.slice(Math.ceil(fodder.length / 3), Math.ceil((fodder.length * 2) / 3)),
-    fodder.slice(Math.ceil((fodder.length * 2) / 3)),
-  ];
+
+  // Distribute fodder round-robin across rooms, nearest first; boss last.
+  const targets = G.map.rooms.filter((r) => !r.isSpawn).sort((a, b) => a.dist - b.dist);
+  G.roomBatches = new Map(targets.map((r) => [r.id, [] as UnreadMsg[]]));
+  fodder.forEach((m, j) => G.roomBatches.get(targets[j % targets.length].id)!.push(m));
+  if (bossMsg) {
+    const boss = G.map.rooms.find((r) => r.isBoss)!;
+    if (!G.roomBatches.has(boss.id)) G.roomBatches.set(boss.id, []);
+    G.roomBatches.get(boss.id)!.push(bossMsg);
+  }
   G.pending = unread;
+
+  // Doors sealed, except the ones touching the (empty) spawn room.
+  G.doorState = new Map(G.map.doors.map((d) => [d.id, { open: 0, target: 0 as 0 | 1 }]));
+  const spawnRoom = G.map.rooms.find((r) => r.isSpawn)!;
+  for (const id of spawnRoom.doors) {
+    G.doorState.get(id)!.open = 1;
+    G.doorState.get(id)!.target = 1;
+  }
+  G.currentRoom = spawnRoom.id;
+  G.roomVisited.add(spawnRoom.id);
+
   banner(`LEVEL ${i + 1}: ${room.name} — ${unread.length} UNREAD`, '#e06030', 3);
-  if (G.bossMsg) banner('something important waits at the end…', '#908880', 3.5);
-  if (G.pending.length === 0) {
-    G.doorOpen = true;
-    banner('ALREADY CLEAN — HEAD FOR THE DOOR', '#40e060', 3);
+  if (bossMsg) banner('something important waits at the end…', '#908880', 3.5);
+  if (unread.length === 0) {
+    G.exitOpen = true;
+    banner('ALREADY CLEAN — HEAD FOR THE EXIT', '#40e060', 3);
   }
 }
 
@@ -189,23 +323,27 @@ function aliveCount(): number {
   return G.enemies.filter((e) => !e.dead && e.dying === 0).length;
 }
 
-function spawnEnemy(msg: UnreadMsg, points: { x: number; y: number }[]) {
-  const map = G.map!;
-  const free = points.filter(
-    (p) =>
-      cellAt(map, p.x, p.y) === '.' &&
-      !G.enemies.some((e) => !e.dead && Math.hypot(e.x - p.x, e.y - p.y) < 1),
+function spawnEnemy(msg: UnreadMsg, room: { id: number; cells: { x: number; y: number }[] }) {
+  const free = room.cells.filter(
+    (c) =>
+      cellAt(G.map!, c.x + 0.5, c.y + 0.5) === '.' &&
+      Math.hypot(c.x + 0.5 - G.px, c.y + 0.5 - G.py) > 2.5 &&
+      !G.enemies.some((e) => !e.dead && Math.hypot(e.x - c.x - 0.5, e.y - c.y - 0.5) < 1),
   );
   if (!free.length) return false;
-  const p = free[Math.floor(Math.random() * free.length)];
-  const kind: EnemyKind = msg.boss ? 'boss' : msg.needsReply ? 'cursed' : 'imp';
+  const c = free[Math.floor(Math.random() * free.length)];
+  const kind = rollKind(msg, G.level);
+  const k = KIND[kind];
   G.enemies.push({
     msg,
     kind,
     state: 'chase',
-    x: p.x,
-    y: p.y,
+    roomId: room.id,
+    x: c.x + 0.5,
+    y: c.y + 0.5,
     cursed: msg.needsReply,
+    hp: k.hp,
+    maxHp: k.hp,
     dying: 0,
     dead: false,
     glow: 0,
@@ -214,10 +352,11 @@ function spawnEnemy(msg: UnreadMsg, points: { x: number; y: number }[]) {
     animT: 0,
     frame: 0,
     flipX: false,
-    lastX: p.x,
+    lastX: c.x + 0.5,
     strafeDir: Math.random() < 0.5 ? 1 : -1,
-    strafeT: 0.8 + Math.random() * 0.6,
+    strafeT: k.strafeMin + Math.random() * (k.strafeMax - k.strafeMin),
     growlT: 1 + Math.random() * 2,
+    blinkT: 2 + Math.random() * 1.5,
     sawT: 0,
   });
   const pi = G.pending.findIndex((m) => m.id === msg.id);
@@ -225,21 +364,35 @@ function spawnEnemy(msg: UnreadMsg, points: { x: number; y: number }[]) {
   return true;
 }
 
-const bloodImg = makeBloodParticle();
-
-function spawnBlood(e: Enemy, n: number) {
+function spawnP(
+  x: number,
+  y: number,
+  z: number,
+  img: HTMLCanvasElement,
+  n: number,
+  opts: { speed?: number; vzMin?: number; vzMax?: number; life?: number; size?: number; grav?: number },
+) {
   for (let i = 0; i < n; i++) {
+    const sp = opts.speed ?? 1.5;
+    const life = opts.life ?? 0.7;
     G.particles.push({
-      x: e.x,
-      y: e.y,
-      z: 0.5,
-      vx: (Math.random() * 2 - 1) * 1.5,
-      vy: (Math.random() * 2 - 1) * 1.5,
-      vz: 1 + Math.random(),
-      life: 0.7,
-      img: bloodImg,
+      x,
+      y,
+      z,
+      vx: (Math.random() * 2 - 1) * sp,
+      vy: (Math.random() * 2 - 1) * sp,
+      vz: (opts.vzMin ?? 1) + Math.random() * ((opts.vzMax ?? 2) - (opts.vzMin ?? 1)),
+      life,
+      maxLife: life,
+      size: opts.size ?? 0.08,
+      img,
+      grav: opts.grav ?? 4,
     });
   }
+}
+
+function spawnBlood(e: Enemy, n: number) {
+  spawnP(e.x, e.y, 0.5, bloodImg, n, {});
 }
 
 // --------------------------------------------------------------- actions --
@@ -268,7 +421,7 @@ function doAction(enemy: Enemy, action: RaidAction) {
       if (i >= 0) unread.splice(i, 1);
     })
     .catch((err) => {
-      enemy.dying = 0; // roll back — the mail survived
+      enemy.dying = 0;
       G.streak = 0;
       banner(`FAILED: ${String(err).slice(0, 40)}`, '#f04030', 3);
     });
@@ -276,7 +429,6 @@ function doAction(enemy: Enemy, action: RaidAction) {
 
 async function castSpell(enemy: Enemy) {
   G.screen = 'reply';
-  sfx.spellCast();
   document.exitPointerLock?.();
   const body = await showReplyOverlay(enemy.msg, G.demo);
   G.screen = 'play';
@@ -325,8 +477,10 @@ function shieldBounce(e: Enemy) {
   const d = Math.hypot(dx, dy) || 1;
   const nx = e.x + (dx / d) * 0.4;
   const ny = e.y + (dy / d) * 0.4;
-  if (!isSolid(G.map!, nx, e.y, G.doorOpen)) e.x = nx;
-  if (!isSolid(G.map!, e.x, ny, G.doorOpen)) e.y = ny;
+  if (!solid(nx, e.y)) e.x = nx;
+  if (!solid(e.x, ny)) e.y = ny;
+  G.hitmarkT = 0.12;
+  G.hitmarkShield = true;
   banner(
     e.kind === 'boss'
       ? 'THE BOSS DEMANDS AN ANSWER — [4] REPLY OR [3] STAR'
@@ -335,39 +489,158 @@ function shieldBounce(e: Enemy) {
   );
 }
 
+// Pain knockback for armored bots taking a non-lethal hit.
+function botPain(e: Enemy, power: number) {
+  e.state = 'pain';
+  e.stateT = 0.3;
+  const dx = e.x - G.px;
+  const dy = e.y - G.py;
+  const d = Math.hypot(dx, dy) || 1;
+  const nx = e.x + (dx / d) * power;
+  const ny = e.y + (dy / d) * power;
+  if (!solid(nx, e.y)) e.x = nx;
+  if (!solid(e.x, ny)) e.y = ny;
+}
+
+// Bullet hits a live enemy (non-shield). Returns true if the shot connected.
+function bulletHits(e: Enemy, action: RaidAction, dmg: number): boolean {
+  if (e.cursed) {
+    e.glow = 1;
+    sfx.shieldPing();
+    shieldBounce(e);
+    return true;
+  }
+  G.hitmarkT = 0.12;
+  G.hitmarkShield = false;
+  if (e.hp > dmg) {
+    e.hp -= dmg;
+    sfx.clank();
+    botPain(e, 0.25);
+    return true;
+  }
+  doAction(e, action);
+  return true;
+}
+
+function wallImpact(hx: number, hy: number, rdx: number, rdy: number) {
+  // Pull the impact point a hair back toward the shooter.
+  spawnP(hx - rdx * 0.05, hy - rdy * 0.05, 0.5, dustImg, 5, {
+    speed: 0.6,
+    life: 0.3,
+    size: 0.05,
+    vzMin: 0.2,
+    vzMax: 0.8,
+  });
+  G.particles.push({
+    x: hx - rdx * 0.05,
+    y: hy - rdy * 0.05,
+    z: 0.5,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    life: 4,
+    maxLife: 4,
+    size: 0.04,
+    img: holeImg,
+    grav: 0,
+  });
+}
+
+function ejectCasing() {
+  G.casings.push({
+    x: VIEW_W / 2 + 14,
+    y: VIEW_H - 40,
+    vx: 60 + Math.random() * 30,
+    vy: -90 - Math.random() * 30,
+  });
+}
+
+// Viewmodel stage durations (seconds); `weapon:stage` overrides the default.
+const VM_SEQ_DUR: Record<string, number> = {
+  fire: 0.08,
+  'shotgun:fire': 0.12,
+  'shotgun:recoil': 0.22,
+  'pistol:recoil': 0.08,
+  pump1: 0.18,
+  pump2: 0.18,
+  cast: 0.2,
+  recover: 0.15,
+};
+
+function vmStageDur(stage: string): number {
+  return VM_SEQ_DUR[`${G.weapon}:${stage}`] ?? VM_SEQ_DUR[stage] ?? 0.05;
+}
+
+function startVmSeq(seq: string[]) {
+  G.vmSeq = [...seq];
+  G.vmT = vmStageDur(G.vmSeq[0]);
+  if (G.vmSeq[0] === 'pump1') sfx.pump1();
+  if (G.vmSeq[0] === 'pump2') sfx.pump2();
+}
+
 function fire() {
-  if (G.fireT > 0 || !G.map) return;
+  if (G.fireT > 0 || !G.map || G.castLock || G.switchT !== 0) return;
   const scene = sceneObj();
   switch (G.weapon) {
     case 'pistol': {
       G.fireT = 0.35;
-      G.fireAnim = 1;
+      startVmSeq(['fire', 'recoil']);
       sfx.pistol();
-      const t = pickTarget(scene, 0.055, 14);
-      if (!t) return;
-      const e = G.enemies[t.idx];
-      if (e.cursed) {
-        e.glow = 1;
-        sfx.shieldPing();
-        shieldBounce(e);
-        return;
+      G.light = 1;
+      G.pitch += 3;
+      G.vmKick += 10;
+      ejectCasing();
+      const ang = G.dir + (Math.random() - 0.5) * 0.016;
+      const rdx = Math.cos(ang);
+      const rdy = Math.sin(ang);
+      const wall = castRay(geom(), G.px, G.py, rdx, rdy);
+      const t = pickTargetAt(scene, ang, 0.045, Math.min(14, wall.dist + 0.01));
+      if (t && t.dist < wall.dist) {
+        bulletHits(G.enemies[t.idx], 'archive', 1);
+      } else {
+        wallImpact(wall.hx, wall.hy, rdx, rdy);
       }
-      doAction(e, 'archive');
       break;
     }
     case 'shotgun': {
-      G.fireT = 1.1;
-      G.fireAnim = 1;
+      G.fireT = 0.8;
+      startVmSeq(['fire', 'recoil', 'pump1', 'pump2']);
       sfx.shotgun();
-      const idxs = targetsInCone(scene, 0.2, 6.5);
-      for (const i of idxs) {
-        const e = G.enemies[i];
+      G.light = 1.3;
+      G.pitch += 7;
+      G.vmKick += 22;
+      const pellets = [-0.11, -0.07, -0.035, 0, 0.035, 0.07, 0.11];
+      const hits = new Map<number, number>();
+      for (const off of pellets) {
+        const ang = G.dir + off + (Math.random() - 0.5) * 0.03;
+        const rdx = Math.cos(ang);
+        const rdy = Math.sin(ang);
+        const wall = castRay(geom(), G.px, G.py, rdx, rdy);
+        const t = pickTargetAt(scene, ang, 0.02, Math.min(7, wall.dist + 0.01));
+        if (t && t.dist < wall.dist) {
+          hits.set(t.idx, (hits.get(t.idx) || 0) + 1);
+        } else {
+          spawnP(wall.hx - rdx * 0.05, wall.hy - rdy * 0.05, 0.5, dustImg, 2, {
+            speed: 0.5,
+            life: 0.3,
+            size: 0.05,
+            vzMin: 0.2,
+            vzMax: 0.8,
+          });
+        }
+      }
+      for (const [idx, n] of hits) {
+        const e = G.enemies[idx];
         if (e.cursed) {
           e.glow = 1;
           sfx.shieldPing();
           shieldBounce(e);
-        } else {
+        } else if (n >= 2) {
+          G.hitmarkT = 0.12;
+          G.hitmarkShield = false;
           doAction(e, 'trash');
+        } else {
+          bulletHits(e, 'trash', 1);
         }
       }
       break;
@@ -378,11 +651,15 @@ function fire() {
         banner('NO DEMON IN SIGHT', '#908880', 1.2);
         return;
       }
-      void castSpell(G.enemies[t.idx]);
+      const e = G.enemies[t.idx];
+      G.castLock = true;
+      startVmSeq(['cast', 'recover']);
+      sfx.spellCast();
+      G.projectile = { x: G.px, y: G.py, z: 0.5, target: e, img: fireballImg };
       break;
     }
     case 'chainsaw':
-      break; // handled by hold logic in update
+      break; // hold-to-saw in update
   }
 }
 
@@ -391,8 +668,50 @@ function update(dt: number, now: number) {
   G.banners = G.banners.filter((b) => b.until > now);
   G.actions = G.actions.filter((t) => Date.now() - t < 60_000);
   G.fireT = Math.max(0, G.fireT - dt);
-  G.fireAnim = Math.max(0, G.fireAnim - dt * 6);
   G.hurtT = Math.max(0, G.hurtT - dt * 2);
+  G.hitmarkT = Math.max(0, G.hitmarkT - dt);
+  G.light = Math.max(0, G.light - dt * (G.light > 1 ? 6 : 10));
+  G.pitch += (0 - G.pitch) * Math.min(1, dt * 20);
+  G.vmKick = Math.max(0, G.vmKick - dt * 12);
+  G.shakeT = Math.max(0, G.shakeT - dt);
+
+  // Viewmodel sequence + weapon switching.
+  if (G.vmSeq.length) {
+    G.vmT -= dt;
+    if (G.vmT <= 0) {
+      G.vmSeq.shift();
+      if (G.vmSeq.length) {
+        G.vmT = vmStageDur(G.vmSeq[0]);
+        if (G.vmSeq[0] === 'pump1') sfx.pump1();
+        if (G.vmSeq[0] === 'pump2') sfx.pump2();
+      }
+    }
+  }
+  if (G.switchT > 0) {
+    G.switchT -= dt;
+    if (G.switchT <= 0 && G.switchTo) {
+      G.weapon = G.switchTo;
+      G.switchTo = null;
+      G.switchT = -0.12;
+    }
+  } else if (G.switchT < 0) {
+    G.switchT = Math.min(0, G.switchT + dt);
+  }
+
+  // Screen-space casings.
+  for (const c of G.casings) {
+    c.x += c.vx * dt;
+    c.y += c.vy * dt;
+    c.vy += 400 * dt;
+  }
+  G.casings = G.casings.filter((c) => c.y < VIEW_H + 10);
+
+  // Door slabs slide.
+  for (const st of G.doorState.values()) {
+    if (st.open < st.target) st.open = Math.min(st.target, st.open + dt * 2);
+    else if (st.open > st.target) st.open = Math.max(st.target, st.open - dt * 2);
+  }
+
   if (G.screen !== 'play' || !G.map) return;
 
   // Turning — mouse (pointer lock) + arrow fallback.
@@ -427,57 +746,109 @@ function update(dt: number, now: number) {
     mx += strX;
     my += strY;
   }
-  if (mx || my) {
+  const moving = (mx || my) !== 0;
+  if (moving) {
     const len = Math.hypot(mx, my);
     const nx = G.px + (mx / len) * SPEED * dt;
     const ny = G.py + (my / len) * SPEED * dt;
     const R = 0.22;
-    if (!isSolid(G.map, nx + Math.sign(nx - G.px) * R, G.py, G.doorOpen)) G.px = nx;
-    if (!isSolid(G.map, G.px, ny + Math.sign(ny - G.py) * R, G.doorOpen)) G.py = ny;
+    if (!solid(nx + Math.sign(nx - G.px) * R, G.py)) G.px = nx;
+    if (!solid(G.px, ny + Math.sign(ny - G.py) * R)) G.py = ny;
   }
+  G.vmBobT += dt * (moving ? 9 : 2);
 
-  // Stepped through the exit?
-  if (G.doorOpen && cellAt(G.map, G.px, G.py) === 'D') {
+  // Stepped into the exit?
+  if (G.exitOpen && cellAt(G.map, G.px, G.py) === 'D') {
     G.levelStats.time = performance.now() / 1000 - G.levelT0;
     G.screen = 'tally';
     document.exitPointerLock?.();
     return;
   }
 
-  // Ambush waves — crossing each zone trigger springs the wave ahead.
-  G.map.zones.forEach((z, k) => {
-    if (G.wavesTriggered[k] || G.py >= z.y) return;
-    G.wavesTriggered[k] = true;
-    sfx.alert();
-    for (const msg of G.waves[k]) spawnEnemy(msg, z.spawnPoints);
-  });
-
-  // The boss waits in the arena.
-  if (G.bossMsg && !G.bossSpawned && G.py < G.map.arena.y) {
-    G.bossSpawned = true;
-    sfx.bossRoar();
-    if (spawnEnemy(G.bossMsg, G.map.arena.spawnPoints)) {
-      banner(`BOSS: ${G.bossMsg.subject}`, '#f04040', 3.5);
+  // Entered a new room → spring its batch.
+  const room = roomAt(G.map, G.px, G.py);
+  if (room && room.id !== G.currentRoom) {
+    G.currentRoom = room.id;
+    G.roomVisited.add(room.id);
+    const batch = G.roomBatches.get(room.id) || [];
+    if (!G.roomSpawned.has(room.id)) {
+      G.roomSpawned.add(room.id);
+      if (batch.length) {
+        const hasBoss = batch.some((m) => m.boss);
+        if (hasBoss) sfx.bossRoar();
+        else sfx.alert();
+        for (const msg of batch) spawnEnemy(msg, room);
+        const boss = batch.find((m) => m.boss);
+        if (boss) banner(`BOSS: ${boss.subject}`, '#f04040', 3.5);
+      }
     }
   }
 
-  // Particles — ballistic blood.
+  // Room clears: a spawned room with nothing left alive opens all its doors.
+  // Rooms with no mail clear the moment you enter them.
+  for (const r of G.map.rooms) {
+    const id = r.id;
+    if (r.isSpawn || G.roomCleared.has(id) || !G.roomSpawned.has(id)) continue;
+    if (G.enemies.some((e) => e.roomId === id && !e.dead)) continue;
+    G.roomCleared.add(id);
+    for (const d of r.doors) setDoor(d, 1);
+    const hadMail = (G.roomBatches.get(id) || []).length > 0;
+    if (r.isBoss) {
+      G.exitOpen = true;
+      banner('THE EXIT GRINDS OPEN', '#40e060', 3);
+      sfx.door();
+    } else if (hadMail) {
+      banner('ROOM CLEARED', '#40e060', 1.5);
+    }
+  }
+
+  // Hellfire projectile in flight.
+  if (G.projectile) {
+    const p = G.projectile;
+    const e = p.target;
+    if (e.dead || e.dying > 0) {
+      G.projectile = null;
+      G.castLock = false;
+    } else {
+      const dx = e.x - p.x;
+      const dy = e.y - p.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const step = 9 * dt;
+      spawnP(p.x, p.y, p.z, sparkImg, 1, { speed: 0.3, life: 0.3, size: 0.06, vzMin: 0, vzMax: 0.3, grav: 0 });
+      if (d < 0.45 || d < step) {
+        G.projectile = null;
+        spawnP(e.x, e.y, 0.5, sparkImg, 16, { speed: 2, life: 0.5, size: 0.1 });
+        spawnP(e.x, e.y, 0.5, dustImg, 8, { speed: 1, life: 0.5, size: 0.1 });
+        G.light = 1;
+        G.shakeT = 0.3;
+        sfx.explosion();
+        e.state = 'pain';
+        e.stateT = 0.35;
+        G.castLock = false;
+        void castSpell(e);
+      } else {
+        p.x += (dx / d) * step;
+        p.y += (dy / d) * step;
+      }
+    }
+  }
+
+  // Particles — ballistic bits.
   for (const p of G.particles) {
     p.life -= dt;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     p.z += p.vz * dt;
-    p.vz -= 4 * dt;
+    p.vz -= p.grav * dt;
     if (p.z < 0) {
       p.z = 0;
       p.vz = 0;
     }
   }
   G.particles = G.particles.filter((p) => p.life > 0);
-  G.shakeT = Math.max(0, G.shakeT - dt);
 
   // Enemy AI state machine.
-  const speed = 0.55 + G.level * 0.12;
+  const baseSpeed = 0.55 + G.level * 0.12;
   for (const e of G.enemies) {
     if (e.dead) continue;
     e.glow = Math.max(0, e.glow - dt * 3);
@@ -486,22 +857,43 @@ function update(dt: number, now: number) {
       if (e.dying >= 1) e.dead = true;
       continue;
     }
+    const k = KIND[e.kind];
     const dx = G.px - e.x;
     const dy = G.py - e.y;
     const dist = Math.hypot(dx, dy) || 1;
-    const moveSpeed = e.kind === 'boss' ? 0.45 : speed;
+    const moveSpeed = baseSpeed * k.speed;
     e.stateT -= dt;
 
+    // Phantom blink — sidesteps perpendicular to your line of fire.
+    if (e.kind === 'phantom') {
+      e.blinkT -= dt;
+      if (e.blinkT <= 0 && dist > 2) {
+        e.blinkT = 2 + Math.random() * 1.5;
+        const px = (-dy / dist) * 1.5;
+        const py = (dx / dist) * 1.5;
+        for (const s of [1, -1]) {
+          const nx = e.x + px * s;
+          const ny = e.y + py * s;
+          if (!solid(nx, ny)) {
+            spawnP(e.x, e.y, 0.5, tealImg, 6, { speed: 0.8, life: 0.4, size: 0.06 });
+            e.x = nx;
+            e.y = ny;
+            spawnP(nx, ny, 0.5, tealImg, 6, { speed: 0.8, life: 0.4, size: 0.06 });
+            sfx.blink();
+            break;
+          }
+        }
+      }
+    }
+
     if (e.state === 'chase') {
-      // Zig-zag approach: toward the player + a weaving perpendicular strafe.
       e.strafeT -= dt;
       if (e.strafeT <= 0) {
         e.strafeDir = (e.strafeDir * -1) as 1 | -1;
-        e.strafeT = 0.8 + Math.random() * 0.6;
+        e.strafeT = k.strafeMin + Math.random() * (k.strafeMax - k.strafeMin);
       }
-      let vx = dx / dist + (-dy / dist) * e.strafeDir * 0.5;
-      let vy = dy / dist + (dx / dist) * e.strafeDir * 0.5;
-      // Separation from other live demons.
+      let vx = dx / dist + (-dy / dist) * e.strafeDir * k.strafeAmp;
+      let vy = dy / dist + (dx / dist) * e.strafeDir * k.strafeAmp;
       for (const o of G.enemies) {
         if (o === e || o.dead || o.dying > 0) continue;
         const ox = e.x - o.x;
@@ -515,8 +907,8 @@ function update(dt: number, now: number) {
       const vl = Math.hypot(vx, vy) || 1;
       const nx = e.x + (vx / vl) * moveSpeed * dt;
       const ny = e.y + (vy / vl) * moveSpeed * dt;
-      if (!isSolid(G.map, nx, e.y, G.doorOpen)) e.x = nx;
-      if (!isSolid(G.map, e.x, ny, G.doorOpen)) e.y = ny;
+      if (!solid(nx, e.y)) e.x = nx;
+      if (!solid(e.x, ny)) e.y = ny;
       e.growlT -= dt;
       if (e.growlT <= 0) {
         e.growlT = 2.5 + Math.random() * 1.5;
@@ -524,7 +916,7 @@ function update(dt: number, now: number) {
       }
       if (dist < 1.0) {
         e.state = 'windup';
-        e.stateT = 0.45;
+        e.stateT = k.windup;
       }
     } else if (e.state === 'windup') {
       if (e.stateT <= 0) {
@@ -535,18 +927,16 @@ function update(dt: number, now: number) {
           G.streak = 0;
           G.hurtT = 0.5;
           sfx.hurt();
-          // Lunge into the player.
           const nx = e.x + (dx / dist) * 0.3;
           const ny = e.y + (dy / dist) * 0.3;
-          if (!isSolid(G.map, nx, e.y, G.doorOpen)) e.x = nx;
-          if (!isSolid(G.map, e.x, ny, G.doorOpen)) e.y = ny;
+          if (!solid(nx, e.y)) e.x = nx;
+          if (!solid(e.x, ny)) e.y = ny;
         }
       }
     } else if (e.state === 'attack' || e.state === 'pain') {
       if (e.stateT <= 0) e.state = 'chase';
     }
 
-    // Walk animation + facing.
     if (e.state === 'chase') {
       e.animT += dt * moveSpeed * 4;
       e.frame = Math.floor(e.animT) % 2;
@@ -557,35 +947,26 @@ function update(dt: number, now: number) {
   }
   G.enemies = G.enemies.filter((e) => !e.dead);
 
-  // Chainsaw hold
+  // Chainsaw hold — rips through anything, even armored and shielded.
   if (G.weapon === 'chainsaw' && G.mouseDown) {
     sfx.chainsawStart();
     const t = pickTarget(sceneObj(), 0.25, 1.8);
     if (t) {
       const e = G.enemies[t.idx];
+      sfx.chainsawRev(true);
       e.sawT += dt;
+      spawnBlood(e, 2);
+      G.shakeT = Math.max(G.shakeT, 0.05);
       if (e.sawT > 0.55) {
         e.sawT = -999;
-        doAction(e, 'star'); // works on cursed too — star = "deal with it later"
+        doAction(e, 'star');
       }
+    } else {
+      sfx.chainsawRev(false);
     }
   } else {
     sfx.chainsawStop();
     for (const e of G.enemies) e.sawT = Math.max(0, e.sawT - dt * 2);
-  }
-
-  // Room cleared? All waves sprung, boss dealt with, nothing left breathing.
-  if (
-    !G.doorOpen &&
-    G.wavesTriggered.every(Boolean) &&
-    (!G.bossMsg || G.bossSpawned) &&
-    !G.pending.length &&
-    aliveCount() === 0
-  ) {
-    G.doorOpen = true;
-    G.cleared.add(G.level);
-    sfx.door();
-    banner('ROOM CLEARED — THE DOOR GRINDS OPEN', '#40e060', 3);
   }
 }
 
@@ -602,6 +983,14 @@ function nextLevel() {
   G.screen = 'play';
 }
 
+function switchWeapon(w: Weapon) {
+  if (w === G.weapon || G.switchT !== 0) return;
+  if (w !== 'chainsaw') sfx.chainsawStop();
+  G.switchTo = w;
+  G.switchT = 0.12;
+  if (w === 'spell') G.mouseDown = false;
+}
+
 // ---------------------------------------------------------------- render --
 function sceneObj(): Scene {
   return {
@@ -609,10 +998,14 @@ function sceneObj(): Scene {
     px: G.px,
     py: G.py,
     dir: G.dir,
-    doorOpen: G.doorOpen,
+    exitOpen: G.exitOpen,
+    doorOpen,
     wallTex,
     doorTex,
+    innerDoorTex,
     time: performance.now() / 1000,
+    light: G.light,
+    pitch: G.pitch,
     sprites: G.enemies.map((e) => {
       const f = demons[e.kind];
       let img = f.walk[e.frame];
@@ -637,13 +1030,63 @@ function sceneObj(): Scene {
         bob: e.bob,
         glow: e.glow,
         flipX: e.flipX,
-        scale: e.kind === 'boss' ? 2 : 1,
+        scale: KIND[e.kind].scale,
         yOff,
+        alpha:
+          e.kind === 'phantom' && e.dying === 0
+            ? 0.45 + 0.55 * Math.abs(Math.sin(performance.now() / 1000 * 7 + e.bob))
+            : 1,
       };
     }),
-    particles: G.particles.map((p) => ({ x: p.x, y: p.y, z: p.z, img: p.img })),
+    particles: [
+      ...G.particles.map((p) => ({
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        img: p.img,
+        size: p.size,
+        alpha: Math.min(1, p.life / Math.min(1, p.maxLife)),
+      })),
+      ...(G.projectile
+        ? [{ x: G.projectile.x, y: G.projectile.y, z: G.projectile.z, img: G.projectile.img, size: 0.22, alpha: 1 }]
+        : []),
+    ],
   };
 }
+
+// Current viewmodel frame + offsets.
+function vmDraw(): VmDraw {
+  const frames = weaponFrames[G.weapon];
+  let img = frames.idle || frames.idle1;
+  let flash: HTMLCanvasElement | null = null;
+  let flashX = 0;
+  let flashY = 0;
+  const stage = G.vmSeq[0];
+  if (G.weapon === 'chainsaw') {
+    const revving = G.mouseDown;
+    const rate = revving ? 12 : 4;
+    img = Math.floor(performance.now() / 1000 * rate) % 2 ? frames.idle2 : frames.idle1;
+    if (revving && pickTargetCache) img = frames.cut;
+  } else if (G.weapon === 'spell') {
+    if (stage === 'cast') img = frames.cast;
+    else if (stage === 'recover') img = frames.recover;
+    else img = Math.floor(performance.now() / 1000 * 6) % 2 ? frames.idle2 : frames.idle1;
+  } else if (stage) {
+    img = frames[stage] || img;
+    if (stage === 'fire') {
+      flash = muzzleFlashFrames[Math.floor(performance.now() / 40) % 2];
+      flashY = -18;
+      flashX = G.weapon === 'shotgun' ? 0 : -20;
+    }
+  }
+  const bobX = Math.sin(G.vmBobT) * (G.keys.size ? 3 : 1.2);
+  const bobY = Math.abs(Math.cos(G.vmBobT)) * (G.keys.size ? 3 : 1);
+  const lowerY = G.switchT > 0 ? (0.12 - G.switchT) / 0.12 * 60 : G.switchT < 0 ? (-G.switchT / 0.12) * 60 : 0;
+  return { img, kick: G.vmKick, bobX, bobY, lowerY, flash, flashX, flashY };
+}
+
+// Set while the chainsaw has a live target under the blade (for the cut frame).
+let pickTargetCache = false;
 
 function renderFrame() {
   ctx.fillStyle = '#000';
@@ -653,12 +1096,10 @@ function renderFrame() {
     drawCenterText(ctx, [{ text: 'ZERO RAID — SUMMONING DEMONS…' }]);
     return;
   }
-
   if (G.screen === 'title') {
     drawTitle();
     return;
   }
-
   if (G.screen === 'win') {
     drawCenterText(ctx, [
       { text: '★ INBOX ZERO ★', color: '#f0d040' },
@@ -672,7 +1113,6 @@ function renderFrame() {
     ]);
     return;
   }
-
   if (G.screen === 'tally') {
     const s = G.levelStats;
     drawCenterText(ctx, [
@@ -689,11 +1129,23 @@ function renderFrame() {
 
   ctx.save();
   if (G.shakeT > 0) {
-    ctx.translate((Math.random() * 2 - 1) * 2 * (G.shakeT / 0.4), (Math.random() * 2 - 1) * 2 * (G.shakeT / 0.4));
+    const m = G.shakeT / 0.4;
+    ctx.translate((Math.random() * 2 - 1) * 2 * m, (Math.random() * 2 - 1) * 2 * m);
   }
   render(ctx, sceneObj());
   ctx.restore();
-  drawWeapon(ctx, G.weapon, G.fireAnim, G.weapon === 'chainsaw' && G.mouseDown, performance.now() / 1000);
+
+  pickTargetCache = false;
+  if (G.weapon === 'chainsaw' && G.mouseDown) {
+    pickTargetCache = !!pickTarget(sceneObj(), 0.25, 1.8);
+  }
+  drawWeapon(ctx, vmDraw(), G.hitmarkT > 0 ? (G.hitmarkShield ? -1 : 1) : 0);
+
+  // Brass casings bounce across the HUD layer.
+  for (const c of G.casings) {
+    ctx.drawImage(casingImg, Math.floor(c.x), Math.floor(c.y));
+  }
+
   drawHud(ctx, {
     streak: G.streak,
     apm: G.actions.length,
@@ -710,12 +1162,35 @@ function renderFrame() {
     demo: G.demo,
   });
 
-  // Banners
+  // Automap — corner mini version always; full overlay while TAB held.
+  if (G.map) {
+    const seenDoors = new Set<number>();
+    for (const d of G.map.doors) {
+      if (G.roomVisited.has(d.rooms[0]) || G.roomVisited.has(d.rooms[1])) seenDoors.add(d.id);
+    }
+    const bossRoom = G.map.rooms.find((r) => r.isBoss);
+    const am = {
+      map: G.map,
+      doorOpen,
+      visited: G.roomVisited,
+      seenDoors,
+      bossSeen: bossRoom ? G.roomVisited.has(bossRoom.id) : false,
+      exitOpen: G.exitOpen,
+      px: G.px,
+      py: G.py,
+      dir: G.dir,
+    };
+    if (G.mapHeld) {
+      drawAutomap(ctx, am, 20, 16, VIEW_W - 40, VIEW_H - 32, true);
+    } else {
+      drawAutomap(ctx, am, 6, 6, 70, 70, false);
+    }
+  }
+
   const now = performance.now() / 1000;
   const lines = G.banners.slice(-3).map((b) => ({ text: b.text, color: b.color }));
   if (lines.length) drawCenterText(ctx, lines);
 
-  // Hurt flash
   if (G.hurtT > 0) {
     ctx.fillStyle = `rgba(200,20,10,${G.hurtT * 0.35})`;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
@@ -757,7 +1232,7 @@ function drawTitle() {
 
   ctx.fillStyle = '#605850';
   ctx.font = '7px monospace';
-  ctx.fillText('WASD move · mouse turn · 1 archive · 2 trash · 3 star · 4 reply-spell', cx, 148);
+  ctx.fillText('WASD move · mouse turn · 1 archive · 2 trash · 3 star · 4 reply-spell · TAB map', cx, 148);
   ctx.fillText('violet demons need a real reply — or a chainsaw', cx, 158);
   ctx.textAlign = 'left';
 }
@@ -768,6 +1243,11 @@ const WEAPON_KEYS: Record<string, Weapon> = { '1': 'pistol', '2': 'shotgun', '3'
 document.addEventListener('keydown', (e) => {
   sfx.unlock();
   const k = e.key.toLowerCase();
+  if (k === 'tab') {
+    e.preventDefault();
+    G.mapHeld = true;
+    return;
+  }
   if (G.screen === 'title') {
     if (k === 'enter') {
       if (G.status?.connected) {
@@ -793,9 +1273,13 @@ document.addEventListener('keydown', (e) => {
   if (G.screen !== 'play') return;
   G.keys.add(k);
   if (WEAPON_KEYS[k]) {
-    G.weapon = WEAPON_KEYS[k];
-    if (G.weapon !== 'chainsaw') sfx.chainsawStop();
-    if (G.weapon === 'spell') fire(); // select+cast in one keypress
+    const w = WEAPON_KEYS[k];
+    if (w === 'spell') {
+      G.weapon = 'spell';
+      fire(); // select+cast in one keypress
+    } else {
+      switchWeapon(w);
+    }
   }
   if (k === 'e') {
     G.weapon = 'spell';
@@ -803,7 +1287,11 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-document.addEventListener('keyup', (e) => G.keys.delete(e.key.toLowerCase()));
+document.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'tab') G.mapHeld = false;
+  G.keys.delete(k);
+});
 
 canvas.addEventListener('mousedown', (e) => {
   sfx.unlock();
@@ -816,7 +1304,6 @@ canvas.addEventListener('mousedown', (e) => {
     if (G.weapon === 'chainsaw') return; // hold-to-saw
     fire();
   } else if (e.button === 2) {
-    // right click = shotgun blast (trash)
     const prev = G.weapon;
     G.weapon = 'shotgun';
     fire();
@@ -836,7 +1323,7 @@ document.addEventListener('wheel', (e) => {
   const order: Weapon[] = ['pistol', 'shotgun', 'chainsaw', 'spell'];
   const i = order.indexOf(G.weapon);
   const n = (i + (e.deltaY > 0 ? 1 : -1) + order.length) % order.length;
-  G.weapon = order[n];
+  switchWeapon(order[n]);
 });
 
 // ----------------------------------------------------------------- loop ---
@@ -854,5 +1341,8 @@ requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtesting/debugging.
 if (import.meta.env.DEV) {
-  (window as unknown as { __zr: typeof G }).__zr = G;
+  (window as unknown as { __zr: typeof G & { spawnTest: typeof spawnEnemy } }).__zr = Object.assign(
+    G,
+    { spawnTest: spawnEnemy },
+  );
 }

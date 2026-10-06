@@ -195,7 +195,87 @@ const CURSED_ATTACK_ROWS = [
   '.....KKKKKK.....',
 ];
 
-export const demons: Record<'imp' | 'cursed' | 'boss', DemonFrames> = {
+// Swarmer: promo spam — small, fast, orange, all teeth.
+const SWARMER_ROWS = [
+  '............',
+  '..K......K..',
+  '..KK....KK..',
+  '.KRRRRRRRRK.',
+  '.RRYRRRRYRR.',
+  'RRRRWWWWRRRR',
+  'RRRWRWRWRRRR',
+  '.RRRRRRRRR..',
+  '..RRR..RRR..',
+  '..RR....RR..',
+  '..KR....RK..',
+  '............',
+];
+
+const SWARMER_PALETTE: Palette = {
+  K: '#381808',
+  R: '#c05010',
+  r: '#f08020',
+  Y: '#f0e040',
+  W: '#f0f0e0',
+};
+
+// Bot: automated updates — steel box, red eye slit, slow and armored.
+const BOT_ROWS = [
+  '..KKKKKKKKKKKK..',
+  '.KSSSSSSSSSSSSK.',
+  '.KSWWWWWWWWWSSK.',
+  '.KSWKEEEEEEKWSK.',
+  '.KSWWWWWWWWWSSK.',
+  '.KSSSSSSSSSSSSK.',
+  'KKSSSSSSSSSSSSKK',
+  'KSSKSSSSSSSSKSSK',
+  'KSKKSSSSSSSSKKSK',
+  'KSSKSSSSSSSSKSSK',
+  'KKSSSSSSSSSSSSKK',
+  '.KSSSSSSSSSSSSK.',
+  '.KSSKKSSSSKKSSK.',
+  '.KSKK.SSSS.KKSK.',
+  '.KKK..SSSS..KKK.',
+  '................',
+];
+
+const BOT_PALETTE: Palette = {
+  K: '#2a2e34',
+  S: '#505860',
+  W: '#8a929a',
+  E: '#f03030',
+};
+
+// Phantom: social noise — a flickering teal ghost with a ragged hem.
+const PHANTOM_ROWS = [
+  '.....KKKK.....',
+  '...KKTTTTKK...',
+  '..KTTTTTTTTK..',
+  '.KTTTWWWWTTTK.',
+  '.KTTWEWWWEWTTK',
+  'KTTTTWWWWTTTTK',
+  'KTTTTTTTTTTTTK',
+  'KTTTTKKKKTTTTK',
+  'KTTKTTTTTTKTTK',
+  'KTTTTTTTTTTTTK',
+  'KTTTTTTTTTTTTK',
+  '.KTTTTTTTTTTK.',
+  '.KTTKTTTTKTTK.',
+  '..KTKTTTTKTK..',
+  '..KT.KTTK.TK..',
+  '..K..K..K..K..',
+];
+
+const PHANTOM_PALETTE: Palette = {
+  K: '#1a3a3a',
+  T: '#3aa0a0',
+  W: '#c0f0f0',
+  E: '#0a1a1a',
+};
+
+export type EnemyKindName = 'imp' | 'swarmer' | 'bot' | 'phantom' | 'cursed' | 'boss';
+
+export const demons: Record<EnemyKindName, DemonFrames> = {
   imp: makeFrames(
     IMP_ROWS,
     IMP_PALETTE,
@@ -210,6 +290,33 @@ export const demons: Record<'imp' | 'cursed' | 'boss', DemonFrames> = {
     ['.....KKKKKK.....', '....KK....KK....', '...KK......KK...'],
     CURSED_ATTACK_ROWS,
   ),
+  swarmer: makeFrames(
+    SWARMER_ROWS,
+    SWARMER_PALETTE,
+    2,
+    ['..RR....RR..', '.RRR....RRR.', '.KK......KK.'],
+    SWARMER_ROWS.map((r, i) =>
+      i === 0 ? '..K......K..' : i === 5 ? 'RRWWWWWWWWRR' : i === 6 ? 'RRWRWRWRWRRR' : r,
+    ),
+  ),
+  bot: makeFrames(
+    BOT_ROWS,
+    BOT_PALETTE,
+    2,
+    ['.KSKK.SSSS.KKSK.', '.KKK.SSSS.KKK...', '.KK..SSSS..KK...'],
+    BOT_ROWS.map((r, i) =>
+      i === 3 ? '.KSWKEEEEEEKWSK.' : i === 6 ? 'KSSSSSSSSSSSSK.K' : r,
+    ),
+  ),
+  phantom: makeFrames(
+    PHANTOM_ROWS,
+    PHANTOM_PALETTE,
+    2,
+    ['..KTKTTTTKTK..', '..KT.KTTK.TK..', '..K..K..K..K..'],
+    PHANTOM_ROWS.map((r, i) =>
+      i === 0 ? '...KK....KK...' : i === 8 ? 'KTTTTTTTTTTTTK' : r,
+    ),
+  ),
   boss: makeFrames(
     BOSS_ROWS,
     BOSS_PALETTE,
@@ -221,6 +328,18 @@ export const demons: Record<'imp' | 'cursed' | 'boss', DemonFrames> = {
 
 export function makeBloodParticle(): HTMLCanvasElement {
   return drawPixels(['.RR.', 'RRRR', 'RRrR', '.RR.'], { R: '#b01818', r: '#701010' });
+}
+
+// Single-color blob — dust, decals, explosion sparks, phantom motes.
+export function makeDot(color: string, accent?: string): HTMLCanvasElement {
+  return drawPixels(['.AA.', 'AAAA', 'ABAA', '.AA.'], { A: color, B: accent || color });
+}
+
+export function makeFireball(): HTMLCanvasElement {
+  return drawPixels(
+    ['..YY..', '.YOOY.', 'YOYYOY', 'YOYYOY', '.YOOY.', '..YY..'],
+    { Y: '#f0c030', O: '#e06010' },
+  );
 }
 
 export const sprites = {
@@ -278,6 +397,50 @@ export function makeDoorTexture(): HTMLCanvasElement {
   g.font = 'bold 12px monospace';
   g.textAlign = 'center';
   g.fillText('EXIT', 32, 26);
+  return c;
+}
+
+// Interior sliding door — riveted twin-panel steel with a hazard skirt.
+export function makeInnerDoorTexture(): HTMLCanvasElement {
+  const c = makeCanvas(64, 64);
+  const g = c.getContext('2d')!;
+  // Two panel halves with a dark center slide-gap.
+  g.fillStyle = '#3a4048';
+  g.fillRect(0, 0, 30, 64);
+  g.fillStyle = '#2a3038';
+  g.fillRect(34, 0, 30, 64);
+  g.fillStyle = '#101418';
+  g.fillRect(30, 0, 4, 64);
+  // Panel bevels
+  g.fillStyle = '#4a525c';
+  g.fillRect(2, 2, 26, 1);
+  g.fillRect(2, 2, 1, 60);
+  g.fillRect(36, 2, 26, 1);
+  g.fillRect(36, 2, 1, 60);
+  g.fillStyle = '#1c2026';
+  g.fillRect(2, 61, 26, 1);
+  g.fillRect(27, 2, 1, 60);
+  g.fillRect(36, 61, 26, 1);
+  g.fillRect(61, 2, 1, 60);
+  // Mid-seam
+  g.fillStyle = '#1c2026';
+  g.fillRect(0, 31, 64, 2);
+  // Rivets
+  g.fillStyle = '#808890';
+  for (const [rx, ry] of [
+    [5, 5], [24, 5], [5, 28], [24, 28],
+    [39, 5], [58, 5], [39, 28], [58, 28],
+    [5, 42], [24, 42], [39, 42], [58, 42],
+  ]) {
+    g.fillRect(rx, ry, 2, 2);
+  }
+  // Hazard skirt — diagonal stripes on the bottom 8 rows.
+  for (let y = 56; y < 64; y++) {
+    for (let x = 0; x < 64; x++) {
+      g.fillStyle = ((x + y - 56) >> 2) % 2 ? '#c0a030' : '#202020';
+      g.fillRect(x, y, 1, 1);
+    }
+  }
   return c;
 }
 

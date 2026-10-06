@@ -1,5 +1,6 @@
-// DOOM status bar + weapon viewmodel + room mini-map. All canvas-drawn.
+// DOOM status bar + weapon viewmodel + room mini-map + automap. Canvas-drawn.
 import { VIEW_W, VIEW_H } from './engine';
+import type { LevelMap } from './map';
 import type { RoomData } from './types';
 
 export type Weapon = 'pistol' | 'shotgun' | 'chainsaw' | 'spell';
@@ -26,6 +27,7 @@ const BAR_H = 34;
 export function drawHud(ctx: CanvasRenderingContext2D, s: HudState): void {
   const y0 = VIEW_H; // status bar starts below the 3D viewport
   const H = ctx.canvas.height;
+  void H;
 
   // Status bar background — brushed metal look.
   ctx.fillStyle = '#241f1c';
@@ -117,80 +119,155 @@ function drawMinimap(
 
 // ---- Weapon viewmodel ----------------------------------------------------
 
-export function drawWeapon(
-  ctx: CanvasRenderingContext2D,
-  weapon: Weapon,
-  fireAnim: number, // 0..1, decays after firing
-  sawOn: boolean,
-  time: number,
-): void {
+export interface VmDraw {
+  img: HTMLCanvasElement; // current frame, ~96x96
+  kick: number; // px down-offset from recoil
+  bobX: number;
+  bobY: number;
+  lowerY: number; // px down during weapon switch
+  flash: HTMLCanvasElement | null; // muzzle flash overlay this frame
+  flashX: number; // flash x relative to screen center
+  flashY: number; // flash y relative to viewmodel top
+}
+
+export function drawWeapon(ctx: CanvasRenderingContext2D, vm: VmDraw, hitmark: number): void {
   const cx = VIEW_W / 2;
-  const base = VIEW_H;
-  const kick = fireAnim * 8;
-  const sway = Math.sin(time * 1.5) * 1.5;
+  const x = Math.floor(cx - vm.img.width / 2 + vm.bobX);
+  const y = Math.floor(VIEW_H - vm.img.height + vm.kick + vm.bobY + vm.lowerY);
+  ctx.drawImage(vm.img, x, y);
+  if (vm.flash) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.drawImage(
+      vm.flash,
+      Math.floor(cx + vm.flashX - vm.flash.width / 2),
+      Math.floor(y + vm.flashY),
+    );
+    ctx.restore();
+  }
+
+  // Crosshair — spreads and colors on hits.
+  const spread = hitmark !== 0 ? 7 : 4;
+  ctx.fillStyle = hitmark > 0 ? '#f03030' : hitmark < 0 ? '#ffffff' : '#e0d040';
+  ctx.fillRect(cx - spread, VIEW_H / 2, 3, 1);
+  ctx.fillRect(cx + spread - 3, VIEW_H / 2, 3, 1);
+  ctx.fillRect(cx, VIEW_H / 2 - spread, 1, 3);
+  ctx.fillRect(cx, VIEW_H / 2 + spread - 3, 1, 3);
+}
+
+// ---- Automap ---------------------------------------------------------------
+
+export interface AutomapState {
+  map: LevelMap;
+  doorOpen: (id: number) => number;
+  visited: Set<number>;
+  seenDoors: Set<number>; // doors the player has been near (reveals neighbors)
+  bossSeen: boolean;
+  exitOpen: boolean;
+  px: number;
+  py: number;
+  dir: number;
+}
+
+export function drawAutomap(
+  ctx: CanvasRenderingContext2D,
+  s: AutomapState,
+  x0: number,
+  y0: number,
+  boxW: number,
+  boxH: number,
+  full: boolean,
+): void {
+  const sc = Math.min(boxW / s.map.w, boxH / s.map.h);
+  const ox = x0 + (boxW - s.map.w * sc) / 2;
+  const oy = y0 + (boxH - s.map.h * sc) / 2;
+  const tx = (x: number) => ox + x * sc;
+  const ty = (y: number) => oy + y * sc;
 
   ctx.save();
-  ctx.translate(0, sway + kick);
+  ctx.fillStyle = `rgba(8,8,12,${full ? 0.88 : 0.55})`;
+  ctx.fillRect(x0 - 2, y0 - 2, boxW + 4, boxH + 4);
 
-  if (weapon === 'pistol') {
-    ctx.fillStyle = '#2a2a30';
-    ctx.fillRect(cx - 6, base - 26, 12, 26);
-    ctx.fillStyle = '#44444e';
-    ctx.fillRect(cx - 4, base - 34, 8, 12);
-    ctx.fillStyle = '#1a1a20';
-    ctx.fillRect(cx - 2, base - 36, 4, 4);
-  } else if (weapon === 'shotgun') {
-    ctx.fillStyle = '#3a2a1a';
-    ctx.fillRect(cx - 16, base - 24, 32, 24);
-    ctx.fillStyle = '#2e2e38';
-    ctx.fillRect(cx - 14, base - 38, 12, 16);
-    ctx.fillRect(cx + 2, base - 38, 12, 16);
-    ctx.fillStyle = '#1a1a22';
-    ctx.fillRect(cx - 12, base - 40, 8, 4);
-    ctx.fillRect(cx + 4, base - 40, 8, 4);
-  } else if (weapon === 'chainsaw') {
-    ctx.fillStyle = '#4a3020';
-    ctx.fillRect(cx - 20, base - 22, 40, 22);
-    ctx.fillStyle = '#6a7078';
-    ctx.fillRect(cx - 8, base - 44, 16, 24);
-    ctx.fillStyle = '#9aa0a8';
-    for (let i = 0; i < 6; i++) {
-      const tooth = ((time * 30) % 8) - 4;
-      ctx.fillRect(cx - 10 + (sawOn ? tooth : 0), base - 42 + i * 4, 4, 2);
-      ctx.fillRect(cx + 6 - (sawOn ? tooth : 0), base - 42 + i * 4, 4, 2);
-    }
-    ctx.fillStyle = '#b03020';
-    ctx.fillRect(cx - 14, base - 22, 28, 6);
-  } else {
-    // Hellfire spell — a clawed hand wreathed in flame.
-    ctx.fillStyle = '#7a4a2a';
-    ctx.fillRect(cx - 12, base - 18, 24, 18);
-    for (let i = -1; i <= 1; i++) {
-      ctx.fillRect(cx + i * 8 - 3, base - 26 - Math.abs(i) * 3, 6, 10);
-    }
-    const flicker = Math.sin(time * 20) * 2;
-    ctx.fillStyle = '#e06020';
-    ctx.fillRect(cx - 8, base - 36 - flicker, 16, 10);
-    ctx.fillStyle = '#f0c030';
-    ctx.fillRect(cx - 4, base - 40 - flicker, 8, 8);
+  // Revealable room set: visited rooms + rooms through a seen door.
+  const seen = new Set<number>(s.visited);
+  for (const d of s.map.doors) {
+    if (!s.seenDoors.has(d.id)) continue;
+    if (s.visited.has(d.rooms[0])) seen.add(d.rooms[1]);
+    if (s.visited.has(d.rooms[1])) seen.add(d.rooms[0]);
   }
 
-  // Muzzle flash
-  if (fireAnim > 0.3) {
-    ctx.fillStyle = `rgba(240,200,60,${fireAnim})`;
-    const fy = weapon === 'shotgun' ? base - 52 : base - 46;
+  for (const r of s.map.rooms) {
+    const rx = tx(r.x0);
+    const ry = ty(r.y0);
+    const rw = (r.x1 - r.x0 + 1) * sc;
+    const rh = (r.y1 - r.y0 + 1) * sc;
+    if (s.visited.has(r.id)) {
+      ctx.fillStyle = r.isBoss ? '#3a1414' : '#26221e';
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeStyle = '#8a8078';
+      ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
+      if (r.isBoss) {
+        ctx.font = `${Math.max(6, Math.floor(4 * sc))}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#f04040';
+        ctx.fillText('☠', rx + rw / 2, ry + rh / 2 + 2);
+      }
+    } else if (seen.has(r.id)) {
+      ctx.strokeStyle = '#4a443c';
+      ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
+    }
+  }
+
+  // Doors as little ticks across the walls.
+  for (const d of s.map.doors) {
+    const adjacentSeen = s.visited.has(d.rooms[0]) || s.visited.has(d.rooms[1]);
+    if (!adjacentSeen && !full) continue;
+    const open = s.doorOpen(d.id);
+    ctx.strokeStyle = open >= 0.8 ? '#50d060' : '#d04040';
+    ctx.lineWidth = Math.max(1, sc * 0.3);
     ctx.beginPath();
-    ctx.arc(cx, fy, 10 * fireAnim, 0, Math.PI * 2);
-    ctx.fill();
+    if (d.axis === 'v') {
+      ctx.moveTo(tx(d.x) + sc / 2, ty(d.y));
+      ctx.lineTo(tx(d.x) + sc / 2, ty(d.y + 1));
+    } else {
+      ctx.moveTo(tx(d.x), ty(d.y) + sc / 2);
+      ctx.lineTo(tx(d.x + 1), ty(d.y) + sc / 2);
+    }
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+
+  // Exit glyph once it's open (or always, in full map after boss room seen).
+  if (s.exitOpen || (full && s.bossSeen)) {
+    ctx.font = `bold ${Math.max(6, Math.floor(5 * sc))}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#40e060';
+    ctx.fillText('E', tx(s.map.exit.x) + sc / 2, ty(s.map.exit.y) + sc / 2 + 2);
+  }
+
+  // Player dot + facing tick.
+  const px = tx(s.px);
+  const py = ty(s.py);
+  ctx.fillStyle = '#f0d040';
+  ctx.fillRect(px - 1, py - 1, Math.max(2, sc * 0.25), Math.max(2, sc * 0.25));
+  ctx.strokeStyle = '#f0d040';
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  ctx.lineTo(px + Math.cos(s.dir) * sc * 0.8, py + Math.sin(s.dir) * sc * 0.8);
+  ctx.stroke();
+
+  if (full) {
+    ctx.font = 'bold 9px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#e0d040';
+    ctx.fillText('AUTOMAP', x0 + 4, y0 + 12);
+    ctx.font = '6px monospace';
+    ctx.fillStyle = '#50d060';
+    ctx.fillText('■ open door', x0 + 4, y0 + boxH - 14);
+    ctx.fillStyle = '#d04040';
+    ctx.fillText('■ locked door', x0 + 4, y0 + boxH - 6);
   }
   ctx.restore();
-
-  // Crosshair
-  ctx.fillStyle = '#e0d040';
-  ctx.fillRect(cx - 4, VIEW_H / 2, 3, 1);
-  ctx.fillRect(cx + 2, VIEW_H / 2, 3, 1);
-  ctx.fillRect(cx, VIEW_H / 2 - 4, 1, 3);
-  ctx.fillRect(cx, VIEW_H / 2 + 2, 1, 3);
 }
 
 export function drawCenterText(

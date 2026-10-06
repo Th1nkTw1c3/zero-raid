@@ -88,8 +88,7 @@ export function demoCookie(state: DemoState): string {
 }
 
 export function demoApply(state: DemoState, id: string): boolean {
-  const known = Object.values(seededRooms()).some((list) => list.some((m) => m.id === id));
-  if (!known || state.consumed.has(id)) return false;
+  if (state.consumed.has(id)) return false;
   state.consumed.add(id);
   return true;
 }
