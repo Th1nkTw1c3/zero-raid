@@ -1,5 +1,6 @@
 // DOOM status bar + weapon viewmodel + room mini-map + automap. Canvas-drawn.
 import { VIEW_W, VIEW_H } from './engine';
+import { faceFor } from './assets';
 import type { LevelMap } from './map';
 import type { RoomData } from './types';
 
@@ -115,6 +116,11 @@ function faceImg(state: string, lookDir: number, blood: number): HTMLCanvasEleme
   const key = `${state}:${lookDir}:${blood}`;
   const hit = faceCache.get(key);
   if (hit) return hit;
+  const fd = faceFor(state, lookDir, blood); // Freedoom STF lumps when loaded
+  if (fd) {
+    faceCache.set(key, fd);
+    return fd;
+  }
   const c = document.createElement('canvas');
   c.width = 24;
   c.height = 29;

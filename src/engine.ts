@@ -99,7 +99,7 @@ export function castRay(
           side,
           hx: hxc,
           hy: hyc,
-          texX: Math.min(63, Math.floor((f - open) * 64)),
+          texX: Math.min(0.999, f - open), // wall-column fraction
           mapX,
           mapY,
           doorId: id,
@@ -121,7 +121,7 @@ export function castRay(
       side,
       hx,
       hy,
-      texX: Math.min(63, Math.floor(wallX * 64)),
+      texX: Math.min(0.999, wallX), // fraction across the texture
       mapX,
       mapY,
     };
@@ -167,7 +167,7 @@ export interface Scene extends SceneGeom {
   py: number;
   dir: number;
   wallTexs: HTMLCanvasElement[][]; // wall variants per theme
-  trimTex: HTMLCanvasElement; // door-frame texture
+  trimTexs: HTMLCanvasElement[]; // door-frame texture per theme
   doorTex: HTMLCanvasElement;
   innerDoorTex: HTMLCanvasElement;
   floorTexs: Uint8ClampedArray[]; // 64x64 RGBA, index = map.cellFloor
@@ -296,13 +296,24 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
     let tex: HTMLCanvasElement;
     if (h.cell === '#') {
       const v = ci >= 0 && ci < mw * mh ? s.map.wallVariant[ci] : 0;
-      if (v === 255) tex = s.trimTex;
+      const th = ci >= 0 && ci < mw * mh ? s.map.wallTheme[ci] : 0;
+      if (v === 255) tex = s.trimTexs[th] ?? s.trimTexs[0];
       else {
-        const vars = s.wallTexs[s.map.wallTheme[ci]] ?? s.wallTexs[1];
+        const vars = s.wallTexs[th] ?? s.wallTexs[1];
         tex = vars[v % vars.length];
       }
     } else tex = h.cell === 'd' ? s.innerDoorTex : s.doorTex;
-    ctx.drawImage(tex, h.texX, 0, 1, 64, col, y0, 1, lineH);
+    ctx.drawImage(
+      tex,
+      Math.floor(h.texX * tex.width),
+      0,
+      1,
+      tex.height,
+      col,
+      y0,
+      1,
+      lineH,
+    );
 
     // Banded sector lighting; interior doors sit a touch darker.
     let sh = bandShade(cellLight(s, h.mapX, h.mapY), dist, light);

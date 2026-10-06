@@ -30,12 +30,13 @@ function drawPixels(rows: string[], palette: Palette, scale = 1): HTMLCanvasElem
 // Painted at 4x, downsampled, posterized + outlined (see painter.ts).
 
 import { paint, polish, blob, limb, spike, eye, teeth } from './painter';
+import { staticFrame, type RotFrame } from './assets';
 
 export interface DemonFrames {
-  walk: HTMLCanvasElement[]; // [4]
-  attack: HTMLCanvasElement[]; // [2]: windup, throw/fire
-  pain: HTMLCanvasElement;
-  death: HTMLCanvasElement[]; // [5]: collapse → heap
+  walk: RotFrame[]; // [4]
+  attack: RotFrame[]; // [2]: windup, throw/fire
+  pain: RotFrame;
+  death: RotFrame[]; // [5]: collapse → heap
 }
 
 // Pain = bleached-white recolor of walk[0].
@@ -391,7 +392,12 @@ function painted(kind: PoseKind): DemonFrames {
     attack = [bossFrame('atk0'), bossFrame('atk1')];
     base = walk[0];
   }
-  return { walk, attack, pain: whiteout(base), death: deathFrames(base) };
+  return {
+    walk: walk.map(staticFrame),
+    attack: attack.map(staticFrame),
+    pain: staticFrame(whiteout(base)),
+    death: deathFrames(base).map(staticFrame),
+  };
 }
 
 export type EnemyKindName = 'imp' | 'swarmer' | 'bot' | 'phantom' | 'cursed' | 'boss';
@@ -453,8 +459,8 @@ export function makeFireball(): HTMLCanvasElement {
 }
 
 export const sprites = {
-  imp: demons.imp.walk[0],
-  cursed: demons.cursed.walk[0],
+  imp: demons.imp.walk[0].imgs[0],
+  cursed: demons.cursed.walk[0].imgs[0],
 };
 
 // ---- Textures ----------------------------------------------------------

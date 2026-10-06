@@ -10,7 +10,8 @@
     "dev:web": "vite",
     "build": "tsc --noEmit && vite build",
     "start": "tsx server/dev.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "assets": "node scripts/fetch-freedoom.mjs"
   },
   "dependencies": {
     "express": "^4.21.2"

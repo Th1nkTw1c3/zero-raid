@@ -83,13 +83,30 @@ database.
 
 ## Tech
 
-- Front end: Vite + TypeScript + a hand-rolled raycaster on `<canvas>`
-  (textured DDA walls, billboard sprites with per-column z-buffer, procedural
-  pixel art + WebAudio SFX — zero assets, ~24 KB gzipped).
+- Front end: Vite + TypeScript + a hand-rolled software raycaster on
+  `<canvas>` — textured DDA walls, Wolf3D-style thin sliding doors, per-pixel
+  floor/ceiling casting, 8-rotation billboard sprites with a per-column
+  z-buffer, 16-band colormap-style sector lighting, WebAudio-synthesized SFX.
+  ~29 KB of JS gzipped.
+- Levels: seeded room mazes (DFS spanning tree + loops) per Gmail category;
+  the boss (server-ranked most important unread) holds the farthest room.
 - Back end: 7 tiny Node handlers (`api/`), Gmail REST API via `fetch`
   (no googleapis dependency), encrypted-cookie sessions.
 - Scopes: `gmail.modify`, `gmail.send`. Nothing else.
 
+## Art credits
+
+Monsters, weapons, textures, flats and the status-bar face are from
+**[Freedoom](https://freedoom.github.io/)**, © Contributors to the Freedoom
+project, used under the 3-clause BSD license — see
+`public/freedoom/COPYING.adoc` and `public/freedoom/CREDITS`. Freedoom is not
+affiliated with this project. `npm run assets` re-fetches the curated subset
+(~1.8 MB) from the Freedoom source repository.
+
+If the Freedoom assets fail to load, the game falls back to its original
+procedurally generated art (`src/painter.ts`, `src/textures.ts`) — nothing
+else changes.
+
 ## License
 
-MIT — see LICENSE.
+Code: MIT — see LICENSE. Freedoom assets: BSD-3-Clause (see above).

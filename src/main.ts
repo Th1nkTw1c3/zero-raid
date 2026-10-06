@@ -32,6 +32,7 @@ import {
   type Weapon,
   type VmDraw,
 } from './hud';
+import { loadAssets, rotPick, setFaces, type Assets } from './assets';
 import { sfx } from './sfx';
 import { api } from './net';
 import { showReplyOverlay } from './ui';
@@ -79,7 +80,9 @@ interface Enemy {
   animT: number;
   frame: number;
   flipX: boolean;
+  facing: number; // radians — sprite rotation source (Doom lump rotations)
   lastX: number;
+  lastY: number;
   strafeDir: 1 | -1;
   strafeT: number;
   growlT: number;
@@ -88,6 +91,7 @@ interface Enemy {
   corpse: boolean;
   shotCd: number; // ranged cooldown
   burst: number; // bot burst counter
+  frozen?: boolean; // debug: render only, no AI
 }
 
 interface Particle {
@@ -102,6 +106,7 @@ interface Particle {
   size: number;
   img: HTMLCanvasElement;
   grav: number;
+  frames?: HTMLCanvasElement[]; // animated by life progress (puffs, bursts)
 }
 
 interface Casing {
@@ -131,6 +136,7 @@ interface Shot {
   img: HTMLCanvasElement;
   trail: HTMLCanvasElement;
   smoke: boolean;
+  burst?: HTMLCanvasElement[]; // freedoom explosion frames on impact
 }
 
 interface LevelStats {
@@ -205,18 +211,21 @@ const G = {
   fps: 60,
   face: { state: 'look' as 'look' | 'ouch' | 'grin', until: 0, lookDir: 0, lookT: 0, deadT: 0 },
   msg: '',
+  assets: null as Assets | null,
+  assetsLoaded: false,
+  loadPct: 0,
 };
 
 const THEMES = makeThemes();
 const hazardFloorImg = makeHazardFloor();
-const floorTexs = [...THEMES.map((t) => texPixels(t.floor)), texPixels(hazardFloorImg)];
-const ceilTexs = THEMES.map((t) => texPixels(t.ceil));
-const wallTexs = THEMES.map((t) => t.wall);
-const trimTex = THEMES[0].trim!;
+let floorTexs = [...THEMES.map((t) => texPixels(t.floor)), texPixels(hazardFloorImg)];
+let ceilTexs = THEMES.map((t) => texPixels(t.ceil));
+let wallTexs = THEMES.map((t) => t.wall);
+let trimTexs = THEMES.map((t) => t.trim ?? t.wall[0]);
 const poolImgs = makePoolDecals();
 const doorTex = makeDoorTexture();
 const innerDoorTex = makeInnerDoorTexture();
-const bloodImg = makeBloodParticle();
+let bloodImg = makeBloodParticle();
 const dustImg = makeDot('#a0a0a0');
 const holeImg = makeDot('#101010');
 const sparkImg = makeDot('#f08020', '#f0c030');
@@ -224,12 +233,27 @@ const tealImg = makeDot('#3aa0a0', '#c0f0f0');
 const fireballImg = makeFireball();
 const smokeImg = makeDot('#808080', '#505050');
 // Enemy projectiles: img, speed, size, trail particle.
-const SHOT_DEF: Record<string, { img: HTMLCanvasElement; speed: number; size: number; trail: HTMLCanvasElement; smoke: boolean; cdMin: number; cdMax: number }> = {
+const SHOT_DEF: Record<
+  string,
+  {
+    img: HTMLCanvasElement;
+    speed: number;
+    size: number;
+    trail: HTMLCanvasElement;
+    smoke: boolean;
+    cdMin: number;
+    cdMax: number;
+    burst?: HTMLCanvasElement[];
+  }
+> = {
   imp: { img: makeGlowBall('#f0c030', '#e06010'), speed: 5.5, size: 0.18, trail: sparkImg, smoke: false, cdMin: 3, cdMax: 5 },
   cursed: { img: makeGlowBall('#40ff60', '#1a6a20'), speed: 6.5, size: 0.2, trail: tealImg, smoke: false, cdMin: 2.5, cdMax: 4 },
   bot: { img: makeGlowBall('#60ff80', '#20a040'), speed: 8, size: 0.12, trail: tealImg, smoke: false, cdMin: 4, cdMax: 4 },
   boss: { img: makeRocket(), speed: 5, size: 0.24, trail: smokeImg, smoke: true, cdMin: 2.5, cdMax: 2.5 },
 };
+
+// Active weapon viewmodels — Freedoom frames when assets load, else procedural.
+let activeWeapons: Record<string, Record<string, HTMLCanvasElement>> = weaponFrames;
 
 const SCORE: Record<RaidAction | 'reply', number> = {
   archive: 10,
@@ -271,6 +295,8 @@ function rollKind(msg: UnreadMsg, level: number): EnemyKind {
 // ---------------------------------------------------------------- boot ----
 async function boot() {
   try {
+    const assets = await loadAssets((pct) => (G.loadPct = pct));
+    if (assets) applyAssets(assets);
     G.status = await api.status();
     G.demo = G.status.demo;
     if (G.status.connected) {
@@ -287,6 +313,26 @@ async function boot() {
     G.msg = err instanceof Error ? err.message : String(err);
     G.screen = 'title';
   }
+}
+
+// Swap procedural art for Freedoom lumps once everything decoded.
+function applyAssets(a: Assets) {
+  G.assets = a;
+  G.assetsLoaded = true;
+  wallTexs = a.wallTexs;
+  trimTexs = a.trimTexs;
+  floorTexs = a.floorTexs.length > THEMES.length
+    ? a.floorTexs
+    : [...a.floorTexs, texPixels(hazardFloorImg)];
+  ceilTexs = a.ceilTexs;
+  for (const kind of Object.keys(SHOT_DEF)) {
+    const art = a.shots[kind];
+    if (art?.fly.length) SHOT_DEF[kind].img = art.fly[0];
+    if (art?.burst.length) SHOT_DEF[kind].burst = art.burst;
+  }
+  if (a.blud.length) bloodImg = a.blud[0];
+  Object.assign(activeWeapons, a.weapons);
+  setFaces(a.faces);
 }
 
 type BannerSlot = 'level' | 'room' | 'boss' | 'hint' | 'misc';
@@ -411,7 +457,9 @@ function spawnEnemy(msg: UnreadMsg, room: { id: number; cells: { x: number; y: n
     animT: 0,
     frame: 0,
     flipX: false,
+    facing: Math.random() * Math.PI * 2,
     lastX: c.x + 0.5,
+    lastY: c.y + 0.5,
     strafeDir: Math.random() < 0.5 ? 1 : -1,
     strafeT: k.strafeMin + Math.random() * (k.strafeMax - k.strafeMin),
     growlT: 1 + Math.random() * 2,
@@ -432,7 +480,7 @@ function spawnP(
   z: number,
   img: HTMLCanvasElement,
   n: number,
-  opts: { speed?: number; vzMin?: number; vzMax?: number; life?: number; size?: number; grav?: number },
+  opts: { speed?: number; vzMin?: number; vzMax?: number; life?: number; size?: number; grav?: number; frames?: HTMLCanvasElement[] },
 ) {
   for (let i = 0; i < n; i++) {
     const sp = opts.speed ?? 1.5;
@@ -449,11 +497,19 @@ function spawnP(
       size: opts.size ?? 0.08,
       img,
       grav: opts.grav ?? 4,
+      frames: opts.frames,
     });
   }
 }
 
 function spawnBlood(e: Enemy, n: number) {
+  // Freedoom blood lumps: a random BLUD frame per particle.
+  if (G.assets?.blud.length) {
+    for (let i = 0; i < n; i++) {
+      spawnP(e.x, e.y, 0.5, G.assets.blud[i % G.assets.blud.length], 1, {});
+    }
+    return;
+  }
   spawnP(e.x, e.y, 0.5, bloodImg, n, {});
 }
 
@@ -475,6 +531,7 @@ function fireShot(e: Enemy) {
     img: def.img,
     trail: def.trail,
     smoke: def.smoke,
+    burst: def.burst,
   });
   sfx.fireball();
 }
@@ -627,6 +684,7 @@ function wallImpact(hx: number, hy: number, rdx: number, rdy: number) {
     size: 0.05,
     vzMin: 0.2,
     vzMax: 0.8,
+    frames: G.assets?.puff,
   });
   G.particles.push({
     x: hx - rdx * 0.05,
@@ -723,6 +781,7 @@ function fire() {
             size: 0.05,
             vzMin: 0.2,
             vzMax: 0.8,
+            frames: G.assets?.puff,
           });
         }
       }
@@ -974,7 +1033,10 @@ function update(dt: number, now: number) {
       grav: 0,
     });
     if (isSolid(G.map!, nx, ny, doorOpen, G.exitOpen)) {
-      // wall impact — small burst + hiss
+      // wall impact — burst animation + hiss
+      if (sh.burst) {
+        spawnP(sh.x, sh.y, sh.z, sh.burst[0], 1, { speed: 0, life: 0.3, size: 0.5, grav: 0, vzMin: 0, vzMax: 0, frames: sh.burst });
+      }
       spawnP(sh.x, sh.y, sh.z, sparkImg, 6, { speed: 1, life: 0.3, size: 0.06 });
       sfx.hiss();
       sh.life = 0;
@@ -984,6 +1046,9 @@ function update(dt: number, now: number) {
     sh.y = ny;
     if (Math.hypot(sh.x - G.px, sh.y - G.py) < 0.4) {
       // player hit — same pain as a melee strike
+      if (sh.burst) {
+        spawnP(sh.x, sh.y, sh.z, sh.burst[0], 1, { speed: 0, life: 0.3, size: 0.5, grav: 0, vzMin: 0, vzMax: 0, frames: sh.burst });
+      }
       spawnP(sh.x, sh.y, sh.z, sparkImg, 10, { speed: 1.5, life: 0.4, size: 0.08 });
       if (G.streak > 0) banner('STREAK BROKEN', '#f04030', 1.5);
       G.streak = 0;
@@ -1034,6 +1099,7 @@ function update(dt: number, now: number) {
       }
       continue;
     }
+    if (e.frozen) continue; // debug staging — rendered but no AI
     const k = KIND[e.kind];
     const dx = G.px - e.x;
     const dy = G.py - e.y;
@@ -1144,8 +1210,17 @@ function update(dt: number, now: number) {
       e.frame = Math.floor(e.animT) % 4;
     }
     const ddx = e.x - e.lastX;
+    const ddy = e.y - e.lastY;
     if (Math.abs(ddx) > 1e-4) e.flipX = ddx < 0;
+    // Facing: velocity while chasing, toward the player otherwise.
+    if (e.state === 'chase') {
+      if (Math.hypot(ddx, ddy) > 1e-4) e.facing = Math.atan2(ddy, ddx);
+    } else {
+      // windup/attack/ranged/pain — squared up to the player
+      e.facing = Math.atan2(G.py - e.y, G.px - e.x);
+    }
     e.lastX = e.x;
+    e.lastY = e.y;
   }
   G.enemies = G.enemies.filter((e) => !e.dead);
 
@@ -1203,7 +1278,7 @@ function sceneObj(): Scene {
     exitOpen: G.exitOpen,
     doorOpen,
     wallTexs,
-    trimTex,
+    trimTexs,
     doorTex,
     innerDoorTex,
     floorTexs,
@@ -1214,20 +1289,24 @@ function sceneObj(): Scene {
     light: G.light,
     pitch: G.pitch,
     sprites: G.enemies.map((e) => {
-      const f = demons[e.kind];
-      let img = f.walk[e.frame % f.walk.length];
+      const f = G.assets ? G.assets.demons[e.kind] : demons[e.kind];
+      let rf = f.walk[e.frame % f.walk.length];
       let yOff = 0;
       if (e.dying > 0) {
         const di = Math.min(4, Math.floor(e.dying * 5));
-        img = f.death[di];
+        rf = f.death[di];
         yOff = di * 0.04;
       } else if (e.state === 'pain') {
-        img = f.pain;
+        rf = f.pain;
       } else if (e.state === 'windup') {
-        img = f.attack[0];
+        rf = f.attack[0];
       } else if (e.state === 'attack' || e.state === 'ranged') {
-        img = f.attack[1];
+        rf = f.attack[1];
       }
+      // Doom lump rotation: index 0 faces the viewer.
+      const va = Math.atan2(G.py - e.y, G.px - e.x);
+      const rot = Math.round((va - e.facing) / (Math.PI / 4)) & 7;
+      const { img, flip } = rotPick(rf, rot);
       return {
         x: e.x,
         y: e.y,
@@ -1238,8 +1317,8 @@ function sceneObj(): Scene {
         dying: e.dying,
         bob: e.bob,
         glow: e.glow,
-        flipX: e.flipX,
-        scale: KIND[e.kind].scale,
+        flipX: flip !== (rf.rotating ? false : e.flipX),
+        scale: G.assets ? G.assets.demons[e.kind].worldH : KIND[e.kind].scale,
         yOff,
         alpha:
           e.kind === 'phantom' && e.dying === 0
@@ -1252,7 +1331,9 @@ function sceneObj(): Scene {
         x: p.x,
         y: p.y,
         z: p.z,
-        img: p.img,
+        img: p.frames
+          ? p.frames[Math.min(p.frames.length - 1, Math.floor((1 - p.life / p.maxLife) * p.frames.length))]
+          : p.img,
         size: p.size,
         alpha: Math.min(1, p.life / Math.min(1, p.maxLife)),
       })),
@@ -1274,7 +1355,7 @@ function sceneObj(): Scene {
 
 // Current viewmodel frame + offsets.
 function vmDraw(): VmDraw {
-  const frames = weaponFrames[G.weapon];
+  const frames = activeWeapons[G.weapon];
   let img = frames.idle || frames.idle1;
   let flash: HTMLCanvasElement | null = null;
   let flashX = 0;
@@ -1291,7 +1372,8 @@ function vmDraw(): VmDraw {
     else img = Math.floor(performance.now() / 1000 * 6) % 2 ? frames.idle2 : frames.idle1;
   } else if (stage) {
     img = frames[stage] || img;
-    if (stage === 'fire') {
+    if (stage === 'fire' && !G.assetsLoaded) {
+      // procedural overlay only — Freedoom SHTF/PISF frames carry their own flash
       flash = muzzleFlashFrames[Math.floor(performance.now() / 40) % 2];
       flashY = -6 * VM_SCALE;
       flashX = G.weapon === 'shotgun' ? 0 : -7 * VM_SCALE;
@@ -1319,7 +1401,12 @@ function renderFrame() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   if (G.screen === 'boot') {
-    drawCenterText(ctx, [{ text: 'ZERO RAID — SUMMONING DEMONS…' }]);
+    drawCenterText(ctx, [
+      { text: 'ZERO RAID — SUMMONING DEMONS…' },
+      ...(G.loadPct > 0 && G.loadPct < 100
+        ? [{ text: `LOADING FREEDOOM ART… ${G.loadPct}%`, color: '#908880' }]
+        : []),
+    ]);
     return;
   }
   if (G.screen === 'title') {
@@ -1465,6 +1552,11 @@ function drawTitle() {
   ctx.font = '7px monospace';
   ctx.fillText('WASD move · mouse turn · 1 archive · 2 trash · 3 star · 4 reply-spell · TAB map', cx, 148);
   ctx.fillText('violet demons need a real reply — or a chainsaw', cx, 158);
+  ctx.fillText(
+    G.assetsLoaded ? 'art: Freedoom (BSD) — freedoom.github.io' : 'art: procedural fallback',
+    cx,
+    168,
+  );
   ctx.textAlign = 'left';
 }
 
