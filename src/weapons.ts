@@ -24,6 +24,8 @@ function drawPixels(rows: string[], palette: Palette, scale = 1): HTMLCanvasElem
 
 const W = 40;
 const H = 34;
+// 2x → 80x68px: DOOM-ish ~40% of viewport height; 3x swallowed the view.
+export const VM_SCALE = 2;
 
 // Char-grid builder helpers.
 function blank(): string[] {
@@ -317,26 +319,26 @@ function spellFrame(flame: number, handDy: number, big: boolean): string[] {
 
 export const weaponFrames: Record<string, Record<string, HTMLCanvasElement>> = {
   pistol: {
-    idle: drawPixels(pistolFrame(0, 0, false), PISTOL_PAL, 3),
-    fire: drawPixels(pistolFrame(4, 2, true), PISTOL_PAL, 3),
-    recoil: drawPixels(pistolFrame(2, 0, false), PISTOL_PAL, 3),
+    idle: drawPixels(pistolFrame(0, 0, false), PISTOL_PAL, VM_SCALE),
+    fire: drawPixels(pistolFrame(4, 2, true), PISTOL_PAL, VM_SCALE),
+    recoil: drawPixels(pistolFrame(2, 0, false), PISTOL_PAL, VM_SCALE),
   },
   shotgun: {
-    idle: drawPixels(shotgunFrame(0, 0, 0, false), SHOT_PAL, 3),
-    fire: drawPixels(shotgunFrame(4, 0, 0, true), SHOT_PAL, 3),
-    pump1: drawPixels(shotgunFrame(0, 4, 5, false), SHOT_PAL, 3),
-    pump2: drawPixels(shotgunFrame(0, 2, 2, false), SHOT_PAL, 3),
+    idle: drawPixels(shotgunFrame(0, 0, 0, false), SHOT_PAL, VM_SCALE),
+    fire: drawPixels(shotgunFrame(4, 0, 0, true), SHOT_PAL, VM_SCALE),
+    pump1: drawPixels(shotgunFrame(0, 4, 5, false), SHOT_PAL, VM_SCALE),
+    pump2: drawPixels(shotgunFrame(0, 2, 2, false), SHOT_PAL, VM_SCALE),
   },
   chainsaw: {
-    idle1: drawPixels(chainsawFrame(0, 0, false), SAW_PAL, 3),
-    idle2: drawPixels(chainsawFrame(1, 0, false), SAW_PAL, 3),
-    cut: drawPixels(chainsawFrame(1, 3, true), SAW_PAL, 3),
+    idle1: drawPixels(chainsawFrame(0, 0, false), SAW_PAL, VM_SCALE),
+    idle2: drawPixels(chainsawFrame(1, 0, false), SAW_PAL, VM_SCALE),
+    cut: drawPixels(chainsawFrame(1, 3, true), SAW_PAL, VM_SCALE),
   },
   spell: {
-    idle1: drawPixels(spellFrame(0, 0, false), SPELL_PAL, 3),
-    idle2: drawPixels(spellFrame(1, 0, false), SPELL_PAL, 3),
-    cast: drawPixels(spellFrame(0, -6, true), SPELL_PAL, 3),
-    recover: drawPixels(spellFrame(1, 4, false), SPELL_PAL, 3),
+    idle1: drawPixels(spellFrame(0, 0, false), SPELL_PAL, VM_SCALE),
+    idle2: drawPixels(spellFrame(1, 0, false), SPELL_PAL, VM_SCALE),
+    cast: drawPixels(spellFrame(0, -6, true), SPELL_PAL, VM_SCALE),
+    recover: drawPixels(spellFrame(1, 4, false), SPELL_PAL, VM_SCALE),
   },
 };
 

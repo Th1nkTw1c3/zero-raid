@@ -18,7 +18,7 @@ import {
   makeDoorTexture,
   makeInnerDoorTexture,
 } from './sprites';
-import { weaponFrames, muzzleFlashFrames, casingImg } from './weapons';
+import { weaponFrames, muzzleFlashFrames, casingImg, VM_SCALE } from './weapons';
 import {
   drawHud,
   drawWeapon,
@@ -1075,8 +1075,8 @@ function vmDraw(): VmDraw {
     img = frames[stage] || img;
     if (stage === 'fire') {
       flash = muzzleFlashFrames[Math.floor(performance.now() / 40) % 2];
-      flashY = -18;
-      flashX = G.weapon === 'shotgun' ? 0 : -20;
+      flashY = -6 * VM_SCALE;
+      flashX = G.weapon === 'shotgun' ? 0 : -7 * VM_SCALE;
     }
   }
   const bobX = Math.sin(G.vmBobT) * (G.keys.size ? 3 : 1.2);
