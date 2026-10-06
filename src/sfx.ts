@@ -160,4 +160,12 @@ export const sfx = {
   alert() {
     tone(880, 440, 0.12, 0.25, 'square');
   },
+  fireball() {
+    // whoosh — bandpass noise sweep down
+    noiseBurst(0.25, 800, 0.3, 'bandpass');
+    setTimeout(() => noiseBurst(0.2, 300, 0.18, 'bandpass'), 60);
+  },
+  hiss() {
+    noiseBurst(0.18, 2400, 0.22, 'highpass');
+  },
 };

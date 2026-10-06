@@ -22,6 +22,8 @@ export interface RayHit {
   hx: number;
   hy: number;
   texX: number;
+  mapX: number;
+  mapY: number;
   doorId?: number;
   doorFrac?: number; // position along the slab, 0..1
 }
@@ -98,6 +100,8 @@ export function castRay(
           hx: hxc,
           hy: hyc,
           texX: Math.min(63, Math.floor((f - open) * 64)),
+          mapX,
+          mapY,
           doorId: id,
           doorFrac: f,
         };
@@ -118,6 +122,8 @@ export function castRay(
       hx,
       hy,
       texX: Math.min(63, Math.floor(wallX * 64)),
+      mapX,
+      mapY,
     };
   }
 }
@@ -145,33 +151,49 @@ export interface ParticleDraw {
   img: HTMLCanvasElement;
   size: number; // world-space fraction, ~0.08 default
   alpha: number;
+  additive?: boolean; // drawn with 'lighter' (projectile glows)
+}
+
+export interface DecalDraw {
+  x: number;
+  y: number;
+  img: HTMLCanvasElement;
+  size: number; // world units wide
+  alpha: number;
 }
 
 export interface Scene extends SceneGeom {
   px: number;
   py: number;
   dir: number;
-  wallTex: HTMLCanvasElement;
+  wallTexs: HTMLCanvasElement[][]; // wall variants per theme
+  trimTex: HTMLCanvasElement; // door-frame texture
   doorTex: HTMLCanvasElement;
   innerDoorTex: HTMLCanvasElement;
+  floorTexs: Uint8ClampedArray[]; // 64x64 RGBA, index = map.cellFloor
+  ceilTexs: Uint8ClampedArray[]; // index = map.cellTheme
+  roomLight: Float32Array; // per-room sector light incl. flicker, indexed by room id
   sprites: SpriteDraw[];
   particles: ParticleDraw[];
+  decals: DecalDraw[]; // flat blood pools on the floor
   time: number;
   light: number; // muzzle flash light 0..1
   pitch: number; // horizon shift in px (recoil)
 }
 
 const zbuf = new Float32Array(VIEW_W);
+let frameBuf: ImageData | null = null;
 
-function shade(dist: number): number {
-  return Math.min(0.6, dist * 0.045);
+// Sector light for the room owning a map cell.
+function cellLight(s: Scene, mx: number, my: number): number {
+  const rid = mx >= 0 && my >= 0 && mx < s.map.w && my < s.map.h ? s.map.cellRoom[my * s.map.w + mx] : -1;
+  return rid >= 0 ? s.roomLight[rid] : 0.55;
 }
 
-function lerpColor(a: string, b: string, t: number): string {
-  const pa = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16));
-  const pb = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16));
-  const m = pa.map((v, i) => Math.round(v + (pb[i] - v) * t));
-  return `rgb(${m[0]},${m[1]},${m[2]})`;
+// Doom colormap-style banded distance fade, lifted by muzzle light.
+function bandShade(light: number, dist: number, muzzle: number): number {
+  const sh = Math.min(1, Math.max(0.12, light - dist * 0.035));
+  return Math.min(1, (Math.floor(sh * 16) / 16) + muzzle * 0.4);
 }
 
 export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
@@ -180,21 +202,84 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
   const planeScale = Math.tan(FOV / 2);
   const planeX = -dirY * planeScale;
   const planeY = dirX * planeScale;
-  const horizon = VIEW_H / 2 + s.pitch;
+  const horizon = Math.min(VIEW_H - 1, Math.max(1, VIEW_H / 2 + s.pitch));
   const light = Math.min(1, s.light);
+  const mw = s.map.w;
+  const mh = s.map.h;
 
-  // Ceiling — doom-dark gradient, warmed by muzzle light.
-  const ceil = ctx.createLinearGradient(0, 0, 0, horizon);
-  ceil.addColorStop(0, lerpColor('#0a0a12', '#403028', light * 0.3));
-  ceil.addColorStop(1, lerpColor('#1c1c28', '#403028', light * 0.3));
-  ctx.fillStyle = ceil;
-  ctx.fillRect(0, 0, VIEW_W, Math.max(0, horizon));
-  // Floor.
-  const floor = ctx.createLinearGradient(0, horizon, 0, VIEW_H);
-  floor.addColorStop(0, lerpColor('#38302a', '#403028', light * 0.3));
-  floor.addColorStop(1, lerpColor('#181410', '#403028', light * 0.3));
-  ctx.fillStyle = floor;
-  ctx.fillRect(0, Math.max(0, horizon), VIEW_W, VIEW_H - horizon);
+  // Floor + ceiling casting into a per-pixel buffer.
+  if (!frameBuf) frameBuf = new ImageData(VIEW_W, VIEW_H);
+  const px32 = frameBuf.data;
+  const rdLeftX = dirX - planeX;
+  const rdLeftY = dirY - planeY;
+  const rdRightX = dirX + planeX;
+  const rdRightY = dirY + planeY;
+  const yFloor0 = Math.ceil(horizon);
+  const yCeil1 = Math.floor(horizon);
+  for (let y = yFloor0; y < VIEW_H; y++) {
+    const p = y - horizon + 0.001;
+    const rowDist = (VIEW_H * 0.5) / p;
+    let fx = s.px + rowDist * rdLeftX;
+    let fy = s.py + rowDist * rdLeftY;
+    const stepX = (rowDist * (rdRightX - rdLeftX)) / VIEW_W;
+    const stepY = (rowDist * (rdRightY - rdLeftY)) / VIEW_W;
+    for (let x = 0; x < VIEW_W; x++) {
+      const cx = fx | 0;
+      const cy = fy | 0;
+      let sh = 0.3;
+      let tex: Uint8ClampedArray | null = null;
+      if (cx >= 0 && cy >= 0 && cx < mw && cy < mh) {
+        const ci = cy * mw + cx;
+        tex = s.floorTexs[s.map.cellFloor[ci]];
+        sh = bandShade(cellLight(s, cx, cy), rowDist, light);
+      }
+      const o = (y * VIEW_W + x) * 4;
+      if (tex) {
+        const ti = (((fy * 64) & 63) * 64 + ((fx * 64) & 63)) * 4;
+        px32[o] = tex[ti] * sh;
+        px32[o + 1] = tex[ti + 1] * sh;
+        px32[o + 2] = tex[ti + 2] * sh;
+      } else {
+        px32[o] = px32[o + 1] = px32[o + 2] = 8 * sh;
+      }
+      px32[o + 3] = 255;
+      fx += stepX;
+      fy += stepY;
+    }
+  }
+  for (let y = 0; y < yCeil1; y++) {
+    const p = horizon - y + 0.001;
+    const rowDist = (VIEW_H * 0.5) / p;
+    let fx = s.px + rowDist * rdLeftX;
+    let fy = s.py + rowDist * rdLeftY;
+    const stepX = (rowDist * (rdRightX - rdLeftX)) / VIEW_W;
+    const stepY = (rowDist * (rdRightY - rdLeftY)) / VIEW_W;
+    for (let x = 0; x < VIEW_W; x++) {
+      const cx = fx | 0;
+      const cy = fy | 0;
+      let sh = 0.3;
+      let tex: Uint8ClampedArray | null = null;
+      if (cx >= 0 && cy >= 0 && cx < mw && cy < mh) {
+        const ci = cy * mw + cx;
+        tex = s.ceilTexs[s.map.cellTheme[ci]];
+        sh = bandShade(cellLight(s, cx, cy), rowDist, light) * 0.8;
+      }
+      const o = (y * VIEW_W + x) * 4;
+      if (tex) {
+        const ti = (((fy * 64) & 63) * 64 + ((fx * 64) & 63)) * 4;
+        px32[o] = tex[ti] * sh;
+        px32[o + 1] = tex[ti + 1] * sh;
+        px32[o + 2] = tex[ti + 2] * sh;
+      } else {
+        px32[o] = px32[o + 1] = px32[o + 2] = 6 * sh;
+      }
+      px32[o + 3] = 255;
+      fx += stepX;
+      fy += stepY;
+    }
+  }
+  // Rows covered by neither (pitch edge cases) — black.
+  ctx.putImageData(frameBuf, 0, 0);
 
   // Walls — one ray per column.
   for (let col = 0; col < VIEW_W; col++) {
@@ -207,17 +292,26 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
     const lineH = VIEW_H / dist;
     const y0 = horizon - lineH / 2;
 
-    const tex = h.cell === '#' ? s.wallTex : h.cell === 'd' ? s.innerDoorTex : s.doorTex;
+    const ci = h.mapY * mw + h.mapX;
+    let tex: HTMLCanvasElement;
+    if (h.cell === '#') {
+      const v = ci >= 0 && ci < mw * mh ? s.map.wallVariant[ci] : 0;
+      if (v === 255) tex = s.trimTex;
+      else {
+        const vars = s.wallTexs[s.map.wallTheme[ci]] ?? s.wallTexs[1];
+        tex = vars[v % vars.length];
+      }
+    } else tex = h.cell === 'd' ? s.innerDoorTex : s.doorTex;
     ctx.drawImage(tex, h.texX, 0, 1, 64, col, y0, 1, lineH);
 
-    // Distance + side shading; interior doors sit a touch darker.
-    let alpha = shade(dist);
-    if (h.side === 1) alpha = Math.min(0.85, alpha + 0.15);
+    // Banded sector lighting; interior doors sit a touch darker.
+    let sh = bandShade(cellLight(s, h.mapX, h.mapY), dist, light);
+    if (h.side === 1) sh *= 0.82;
+    let alpha = 1 - sh;
     if (h.cell === 'd') alpha = Math.min(0.9, alpha + 0.08);
     if (h.cell === 'D') {
       alpha = Math.min(0.9, alpha + 0.1 + 0.1 * Math.sin(s.time * 4));
     }
-    alpha = Math.max(0, alpha - light * 0.45);
     if (alpha > 0.01) {
       ctx.fillStyle = `rgba(0,0,0,${alpha})`;
       ctx.fillRect(col, y0, 1, lineH);
@@ -225,7 +319,7 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
     // Sliding doors: status strip across the slab top + bright leading edge.
     if (h.cell === 'd') {
       const open = s.doorOpen(h.doorId ?? -1);
-      const fade = Math.max(0.15, 1 - shade(dist) * 1.6);
+      const fade = Math.max(0.15, sh);
       ctx.fillStyle = open > 0 ? `rgba(64,255,96,${fade})` : `rgba(255,64,64,${fade})`;
       ctx.fillRect(col, y0, 1, 3);
       if (h.doorFrac !== undefined && h.doorFrac - open < 0.02) {
@@ -233,6 +327,30 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
         ctx.fillRect(col, y0, 1, lineH);
       }
     }
+  }
+
+  // Floor decals — blood pools squashed flat on the floor plane.
+  for (const d of s.decals) {
+    const relX = d.x - s.px;
+    const relY = d.y - s.py;
+    const invDet0 = 1 / (planeX * dirY - dirX * planeY);
+    const tx = invDet0 * (dirY * relX - dirX * relY);
+    const ty = invDet0 * (-planeY * relX + planeX * relY);
+    if (ty < 0.2 || ty > MAX_DEPTH) continue;
+    const screenX = (VIEW_W / 2) * (1 + tx / ty);
+    const dw = (VIEW_H / ty) * d.size;
+    const dh = dw * 0.3;
+    const fy = horizon + (VIEW_H / ty) * 0.5;
+    const x0 = Math.floor(screenX - dw / 2);
+    const x1 = Math.ceil(screenX + dw / 2);
+    ctx.globalAlpha = d.alpha;
+    for (let col = Math.max(0, x0); col < Math.min(VIEW_W, x1); col++) {
+      if (zbuf[col] < ty) continue;
+      const texX = Math.floor(((col - x0) / dw) * d.img.width);
+      if (texX < 0 || texX >= d.img.width) continue;
+      ctx.drawImage(d.img, texX, 0, 1, d.img.height, col, fy - dh / 2, 1, dh);
+    }
+    ctx.globalAlpha = 1;
   }
 
   // Sprites — far to near.
@@ -250,16 +368,17 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
     if (ty < 0.2) continue;
 
     const screenX = (VIEW_W / 2) * (1 + tx / ty);
-    const bob = Math.sin(s.time * 3 + sp.bob) * (VIEW_H / ty) * 0.03;
+      const bob = Math.sin(s.time * 3 + sp.bob) * (VIEW_H / ty) * 0.03;
     const size = (VIEW_H / ty) * 0.9 * (sp.scale || 1);
     const hSize = size;
-    const drawW = size;
+    const drawW = size * (sp.img.width / sp.img.height); // keep art aspect
     const x0 = Math.floor(screenX - drawW / 2);
     const x1 = Math.ceil(screenX + drawW / 2);
     const yTop = horizon + (VIEW_H / ty) * 0.5 - hSize + bob + sp.yOff * size;
 
     ctx.globalAlpha = sp.alpha;
-    // Per-column slice draw for correct wall occlusion.
+    // Per-column slice draw for correct wall occlusion, shaded like walls.
+    const spSh = (1 - bandShade(cellLight(s, Math.floor(sp.x), Math.floor(sp.y)), ty, light)) * 0.8;
     const imgW = sp.img.width;
     for (let col = Math.max(0, x0); col < Math.min(VIEW_W, x1); col++) {
       if (zbuf[col] < ty) continue;
@@ -267,6 +386,10 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
       if (sp.flipX) texX = imgW - 1 - texX;
       if (texX < 0 || texX >= imgW) continue;
       ctx.drawImage(sp.img, texX, 0, 1, sp.img.height, col, yTop, 1, hSize);
+      if (spSh > 0.03) {
+        ctx.fillStyle = `rgba(0,0,0,${spSh})`;
+        ctx.fillRect(col, yTop, 1, hSize);
+      }
     }
 
     // Cursed demons get a shield shimmer.
@@ -309,16 +432,19 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
     if (ty < 0.2) continue;
     const screenX = (VIEW_W / 2) * (1 + tx / ty);
     const size = (VIEW_H / ty) * (p.size || 0.08);
+    const pW = size * (p.img.width / p.img.height);
     const yTop = horizon + (VIEW_H / ty) * 0.5 - p.z * (VIEW_H / ty) * 0.9 - size;
-    const x0 = Math.floor(screenX - size / 2);
-    const x1 = Math.ceil(screenX + size / 2);
+    const x0 = Math.floor(screenX - pW / 2);
+    const x1 = Math.ceil(screenX + pW / 2);
     ctx.globalAlpha = p.alpha;
+    if (p.additive) ctx.globalCompositeOperation = 'lighter';
     for (let col = Math.max(0, x0); col < Math.min(VIEW_W, x1); col++) {
       if (zbuf[col] < ty) continue;
-      const texX = Math.floor(((col - x0) / size) * p.img.width);
+      const texX = Math.floor(((col - x0) / pW) * p.img.width);
       if (texX < 0 || texX >= p.img.width) continue;
       ctx.drawImage(p.img, texX, 0, 1, p.img.height, col, yTop, 1, size);
     }
+    ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
   }
 }

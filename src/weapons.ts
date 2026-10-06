@@ -59,151 +59,227 @@ function hand(rows: string[], x: number, y: number, w: number, h: number, finger
   rect(rows, x, y + h, w, 1, 'h');
 }
 
-// ---- Pistol ----------------------------------------------------------------
-// Right-of-center, slide up top, grip angled down into a gloved hand.
-const PISTOL_PAL: Palette = {
-  K: '#14161a',
-  S: '#8a929a', // slide steel
-  L: '#b0b8c0', // slide highlight
-  s: '#3a3e44', // slide shadow
-  F: '#2a2e34', // frame
-  G: '#4a3a28', // grip light
-  g: '#332718', // grip dark
-  H: '#c89060', // skin
-  h: '#9a6a40', // skin shadow
-  V: '#2a4a2a', // sleeve
-  v: '#1a3018', // sleeve shadow
-  W: '#fff0a0',
-  Y: '#f0c030',
-};
+import { paint, polish } from './painter';
 
-function pistolFrame(slideBack: number, up: number, flash: boolean): string[] {
-  const r = blank();
-  const sx = 14 + slideBack;
-  // Barrel sticking out of the slide (revealed when the slide rides back)
-  rect(r, 10, 3, 4 + slideBack, 3, 'K');
-  px(r, 10, 4, 's');
-  // Slide: highlight row on top, steel body, dark lower edge
-  rect(r, sx, 2, 14, 1, 'L');
-  rect(r, sx, 3, 14, 4, 'S');
-  rect(r, sx, 7, 14, 1, 's');
-  // Ejection port notch + rear sight
-  rect(r, sx + 9, 4, 4, 2, 's');
-  rect(r, sx + 12, 1, 2, 1, 'K');
-  px(r, sx, 1, 'K');
-  // Frame rail below slide
-  rect(r, 14, 8, 14, 2, 'F');
-  rect(r, 14, 10, 10, 1, 'K');
-  // Trigger guard loop + trigger
-  rect(r, 16, 11, 7, 1, 'K');
-  rect(r, 16, 12, 1, 3, 'K');
-  rect(r, 22, 12, 1, 3, 'K');
-  px(r, 20, 12, 'K');
-  // Grip angled down-right, checkered
-  for (let y = 10; y < 24; y++) {
-    const gx = 23 + Math.floor((y - 10) / 4);
-    for (let x = 0; x < 6; x++) {
-      px(r, gx + x, y, (x + y) % 2 ? 'G' : 'g');
-    }
-  }
-  // Trigger finger extended toward the guard + 3 fingers wrapping the grip
-  hand(r, 29, 12, 5, 3, 0);
-  rect(r, 25, 14, 9, 2, 'H'); // finger reaching to trigger
-  hand(r, 28, 17, 7, 8, 3);
-  px(r, 27, 13, 'h'); // thumb crease
-  // Sleeve filling to the bottom edge
-  rect(r, 26, 25, 14, 9, 'V');
-  rect(r, 26, 25, 14, 1, 'v');
-  rect(r, 26, 31, 14, 1, 'v');
-  if (flash) {
-    // Flash cluster above the muzzle
-    rect(r, 8, 1, 3, 1, 'W');
-    px(r, 9, 0, 'W');
-    px(r, 7, 2, 'Y');
-    px(r, 11, 2, 'Y');
-    px(r, 9, 2, 'W');
-  }
-  return up ? shiftUp(r, up) : r;
+// Tapered capsule between two points (width w1 at a, w2 at b).
+function taper(
+  g: CanvasRenderingContext2D,
+  ax: number, ay: number, bx: number, by: number,
+  w1: number, w2: number, color: string,
+) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const l = Math.hypot(dx, dy) || 1;
+  const px = (-dy / l), py = (dx / l);
+  g.fillStyle = color;
+  g.beginPath();
+  g.moveTo(ax + px * w1 / 2, ay + py * w1 / 2);
+  g.lineTo(bx + px * w2 / 2, by + py * w2 / 2);
+  g.arc(bx, by, w2 / 2, Math.atan2(py, px), Math.atan2(-py, -px));
+  g.lineTo(ax - px * w1 / 2, ay - py * w1 / 2);
+  g.arc(ax, ay, w1 / 2, Math.atan2(-py, -px), Math.atan2(py, px));
+  g.fill();
 }
 
-// ---- Shotgun ---------------------------------------------------------------
-// Centered, muzzle up: twin barrels + mag tube, walnut furniture, both hands.
-const SHOT_PAL: Palette = {
-  K: '#14161a',
-  B: '#6a7078', // barrel steel
-  b: '#404650', // barrel dark
-  T: '#565c66', // mag tube
-  W: '#5a3a1a', // walnut
-  w: '#7a5030', // walnut highlight
-  R: '#3a3f46', // receiver
-  H: '#c89060',
-  h: '#9a6a40',
-  V: '#2a4a2a',
-  v: '#1a3018',
-  F: '#e06020',
-  Y: '#f0c030',
-  M: '#fff0a0',
-};
-
-function shotgunFrame(up: number, tilt: number, foreDown: number, flash: boolean): string[] {
-  const r = blank();
-  // Twin barrels + magazine tube to the top edge
-  rect(r, 17, 0, 3, 14, 'B');
-  rect(r, 21, 0, 3, 14, 'B');
-  px(r, 18, 0, 'K');
-  px(r, 22, 0, 'K');
-  rect(r, 19, 0, 1, 14, 'b');
-  rect(r, 23, 0, 1, 14, 'b');
-  rect(r, 17, 14, 7, 4, 'T'); // mag tube cap into receiver
-  // Receiver + loading port
-  rect(r, 15, 17, 11, 5, 'R');
-  rect(r, 18, 19, 5, 2, 'K');
-  px(r, 15, 17, 'b');
-  // Walnut fore-end (under the barrels — the pump)
-  const fy = 8 + foreDown;
-  rect(r, 15, fy, 11, 6, 'W');
-  rect(r, 15, fy, 11, 1, 'w');
-  for (let i = 0; i < 11; i += 2) px(r, 15 + i, fy + 3, 'w'); // grip ridges
-  // Left hand wrapped on the fore-end
-  hand(r, 12, fy + 1, 5, 5, 2);
-  // Walnut stock down-left + right hand on the grip/trigger
-  rect(r, 13, 22, 7, 10, 'W');
-  rect(r, 13, 22, 7, 1, 'w');
-  rect(r, 14, 30, 6, 4, 'w');
-  hand(r, 24, 23, 6, 7, 2); // right fist at the wrist of the stock
-  px(r, 23, 22, 'H'); // trigger finger
-  // Sleeves to the bottom edge
-  rect(r, 8, 30, 14, 4, 'V');
-  rect(r, 26, 30, 12, 4, 'V');
-  px(r, 8, 30, 'v');
-  px(r, 26, 30, 'v');
-  let out = r;
-  if (tilt) {
-    // Fake tilt: right columns sag progressively
-    for (let i = 0; i < tilt; i++) {
-      for (let y = 0; y < H; y++) {
-        const x = 24 + i * 3 + (y > 8 ? Math.floor((y - 8) / 10) : 0);
-        if (x < W) {
-          // shift the slice down one pixel
-          const ch = out[y][x];
-          if (ch !== '.') {
-            out[y] = out[y].slice(0, x) + '.' + out[y].slice(x + 1);
-            px(out, x, y + 1, ch);
-          }
-        }
-      }
+// ---- Pistol (painted) ---------------------------------------------------------
+// Doom 2 pose: right of center, pointing up-left, gloved fist, one silhouette.
+function pistolPaint(mode: 'idle' | 'fire' | 'recoil'): HTMLCanvasElement {
+  return paint(80, 68, (g) => {
+    const up = mode === 'fire' ? -4 : 0;
+    const back = mode === 'fire' ? 4 : mode === 'recoil' ? 2 : 0;
+    // Slide axis: rear (58,30) → muzzle (30,9); back = slide slides rearward.
+    const rx = 58 + back * 0.8;
+    const ry = 30 + back * 0.61;
+    const mx = 30 + back * 0.8;
+    const my = 9 + back * 0.61;
+    g.save();
+    g.translate(0, up);
+    // Barrel nub + muzzle ring (barrel extends ahead of the slide when fired)
+    taper(g, mx - 4, my - 2, mx, my, 5, 5, '#14161a');
+    g.fillStyle = '#000';
+    g.beginPath();
+    g.arc(mx - 4, my - 2, 2, 0, Math.PI * 2);
+    g.fill();
+    // Slide — dark steel capsule with a lighter top strip
+    taper(g, rx, ry, mx, my, 9, 7, '#565e68');
+    taper(g, rx, ry - 1.5, mx, my - 1.5, 6, 4.5, '#6a7078');
+    taper(g, rx - 3, ry - 2.5, mx - 1, my - 2.5, 2.5, 2, '#b0b8c0'); // top highlight
+    // ejection port notch + rear sight
+    g.fillStyle = '#14161a';
+    g.fillRect(rx - 14, ry - 3, 7, 3);
+    g.fillRect(rx - 2, ry - 4, 3, 3);
+    // Frame under the slide, merging into the grip
+    taper(g, rx - 2, ry + 2, 52, 34, 7, 6, '#2a2e34');
+    // Trigger guard loop + trigger
+    g.strokeStyle = '#14161a';
+    g.lineWidth = 2;
+    g.beginPath();
+    g.ellipse(51, 36, 6, 4, 0.3, 0, Math.PI * 2);
+    g.stroke();
+    g.fillStyle = '#14161a';
+    g.fillRect(53, 32, 2, 5);
+    // Grip angled down-right
+    taper(g, 55, 32, 66, 56, 11, 12, '#332718');
+    taper(g, 55, 32, 65, 54, 8, 9, '#4a3a28');
+    // checkered grip texture
+    g.fillStyle = '#332718';
+    for (let i = 0; i < 14; i++) {
+      const t = i / 14;
+      const gx = 56 + t * 9;
+      const gy = 34 + t * 20;
+      g.fillRect(gx + (i % 2), gy, 2, 2);
     }
-  }
-  if (flash) {
-    rect(out, 17, -2 + 1, 7, 1, 'M');
-    rect(out, 18, 0, 5, 1, 'M');
-    px(out, 16, 1, 'Y');
-    px(out, 24, 1, 'Y');
-    px(out, 20, 1, 'M');
-    rect(out, 19, -1, 3, 1, 'M');
-  }
-  return up ? shiftUp(out, up) : out;
+    // Fist — one connected skin blob wrapping the grip, knuckle bumps on top
+    g.fillStyle = '#c89060';
+    g.beginPath();
+    g.ellipse(66, 44, 11, 13, -0.35, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#c89060';
+    for (let i = 0; i < 4; i++) {
+      g.beginPath();
+      g.arc(57 + i * 0.5, 34 + i * 5, 3.2, 0, Math.PI * 2); // knuckles over grip front
+      g.fill();
+    }
+    g.fillStyle = '#9a6a40';
+    for (let i = 0; i < 3; i++) {
+      g.beginPath();
+      g.arc(58, 38 + i * 6, 1.2, 0, Math.PI * 2);
+      g.fill();
+    }
+    // thumb over the grip top
+    g.fillStyle = '#c89060';
+    g.beginPath();
+    g.ellipse(58, 30, 4.5, 3, 0.5, 0, Math.PI * 2);
+    g.fill();
+    // Sleeve wedge to the bottom edge
+    g.fillStyle = '#2a4a2a';
+    g.beginPath();
+    g.moveTo(58, 56);
+    g.lineTo(80, 50);
+    g.lineTo(80, 68);
+    g.lineTo(56, 68);
+    g.closePath();
+    g.fill();
+    g.fillStyle = '#1a3018';
+    g.fillRect(58, 62, 22, 2);
+    g.restore();
+    if (mode === 'fire') {
+      g.fillStyle = '#fff0a0';
+      g.fillRect(mx - 8 + up * 0, my - 7 + up, 6, 4);
+      g.fillRect(mx - 6, my - 10 + up, 3, 4);
+      g.fillStyle = '#f0c030';
+      g.fillRect(mx - 10, my - 5 + up, 2, 2);
+      g.fillRect(mx - 1, my - 5 + up, 2, 2);
+    }
+  });
 }
+
+// ---- Shotgun (painted) --------------------------------------------------------
+// Doom 2 pose: viewed from behind/above, barrel leaning up-left to the muzzle,
+// walnut pump straddling it, both hands — one connected silhouette.
+function shotgunPaint(mode: 'idle' | 'fire' | 'pump1' | 'pump2'): HTMLCanvasElement {
+  return paint(80, 68, (g) => {
+    const up = mode === 'fire' ? -5 : 0;
+    const pump = mode === 'pump1' ? 7 : mode === 'pump2' ? 3.5 : 0;
+    const tilt = mode === 'pump1' ? 6 : mode === 'pump2' ? 2 : 0;
+    g.save();
+    if (tilt) {
+      g.translate(66, 68);
+      g.rotate((tilt * Math.PI) / 180);
+      g.translate(-66, -68);
+    }
+    g.translate(0, up);
+    // Barrel axis: base (54,67) → muzzle (34,8). Everything overlaps it.
+    const bx = 54, by = 67, mxx = 34, myy = 8;
+    // Magazine tube — parallel capsule just below-right of the barrel
+    taper(g, bx + 6, by - 2, mxx + 6, myy + 5, 8, 5, '#1c2026');
+    taper(g, bx + 6, by - 2, mxx + 6, myy + 5, 5, 3, '#404650');
+    // Barrel — one continuous tapered capsule
+    taper(g, bx, by, mxx, myy, 9, 6, '#2a2e34');
+    // top highlight along the upper-left edge, dark underside lower-right
+    taper(g, bx - 2, by - 4, mxx - 1.5, myy, 2.2, 1.8, '#50565e');
+    taper(g, bx + 3, by - 1, mxx + 3, myy + 1.5, 2.4, 2, '#16181c');
+    // muzzle ring
+    g.fillStyle = '#0a0c0e';
+    g.beginPath();
+    g.arc(mxx - 1, myy - 1, 3.4, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#2a2e34';
+    g.beginPath();
+    g.arc(mxx - 1.4, myy - 1.6, 1.2, 0, Math.PI * 2);
+    g.fill();
+    // g.restore the pump offset along the barrel axis (down = toward base)
+    const pdx = (bx - mxx) / 62, pdy = (by - myy) / 62;
+    const pumpC = { x: mxx + (bx - mxx) * 0.45 + pdx * pump, y: myy + (by - myy) * 0.45 + pdy * pump };
+    // Walnut pump block straddling the barrel — rotated capsule
+    const bang = Math.atan2(myy - by, mxx - bx);
+    g.save();
+    g.translate(pumpC.x, pumpC.y);
+    g.rotate(bang);
+    g.fillStyle = '#6a4020';
+    g.beginPath();
+    g.roundRect(-13, -5.5, 26, 11, 4);
+    g.fill();
+    g.fillStyle = '#8a5a30';
+    g.fillRect(-13, -5.5, 26, 3);
+    g.fillStyle = '#3e2410';
+    for (let i = -9; i <= 9; i += 3) g.fillRect(i, -2, 1.5, 7); // grip ridges
+    // Left hand wrapped around the pump from below-left — connected to it
+    g.fillStyle = '#c89060';
+    g.beginPath();
+    g.ellipse(-6, 8, 8, 6, 0.3, 0, Math.PI * 2);
+    g.fill();
+    // knuckle bumps over the pump's top edge
+    for (let i = 0; i < 4; i++) {
+      g.beginPath();
+      g.arc(-10 + i * 4, -4, 2.6, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.fillStyle = '#9a6a40';
+    for (let i = 0; i < 3; i++) {
+      g.beginPath();
+      g.arc(-8 + i * 4, -2, 1, 0, Math.PI * 2);
+      g.fill();
+    }
+    // sleeve continues to the bottom edge
+    g.fillStyle = '#2a4a2a';
+    g.beginPath();
+    g.moveTo(-14, 10);
+    g.lineTo(2, 10);
+    g.lineTo(10, 40);
+    g.lineTo(-14, 40);
+    g.closePath();
+    g.fill();
+    g.restore();
+    // Receiver block under the barrel base — bottom right
+    g.fillStyle = '#2a2e34';
+    g.beginPath();
+    g.roundRect(50, 52, 24, 16, 3);
+    g.fill();
+    g.fillStyle = '#4a5058';
+    g.fillRect(50, 52, 24, 3);
+    g.fillStyle = '#16181c';
+    g.fillRect(56, 58, 10, 4); // loading port
+    // Right hand + trigger finger peeking at the bottom edge
+    g.fillStyle = '#c89060';
+    g.beginPath();
+    g.ellipse(60, 66, 9, 7, -0.2, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#9a6a40';
+    g.fillRect(54, 60, 8, 2); // finger into the guard
+    g.restore();
+    if (mode === 'fire') {
+      // flash at the muzzle (it rides up with the gun)
+      g.fillStyle = '#fff0a0';
+      g.fillRect(30, myy - 8 + up, 8, 4);
+      g.fillRect(33, myy - 11 + up, 3, 4);
+      g.fillStyle = '#f0c030';
+      g.fillRect(28, myy - 6 + up, 2, 3);
+      g.fillRect(39, myy - 6 + up, 2, 3);
+    }
+  });
+}
+
 
 // ---- Chainsaw ---------------------------------------------------------------
 // Orange-red housing bottom-right, long steel bar angling to the top-left.
@@ -319,26 +395,26 @@ function spellFrame(flame: number, handDy: number, big: boolean): string[] {
 
 export const weaponFrames: Record<string, Record<string, HTMLCanvasElement>> = {
   pistol: {
-    idle: drawPixels(pistolFrame(0, 0, false), PISTOL_PAL, VM_SCALE),
-    fire: drawPixels(pistolFrame(4, 2, true), PISTOL_PAL, VM_SCALE),
-    recoil: drawPixels(pistolFrame(2, 0, false), PISTOL_PAL, VM_SCALE),
+    idle: pistolPaint('idle'),
+    fire: pistolPaint('fire'),
+    recoil: pistolPaint('recoil'),
   },
   shotgun: {
-    idle: drawPixels(shotgunFrame(0, 0, 0, false), SHOT_PAL, VM_SCALE),
-    fire: drawPixels(shotgunFrame(4, 0, 0, true), SHOT_PAL, VM_SCALE),
-    pump1: drawPixels(shotgunFrame(0, 4, 5, false), SHOT_PAL, VM_SCALE),
-    pump2: drawPixels(shotgunFrame(0, 2, 2, false), SHOT_PAL, VM_SCALE),
+    idle: shotgunPaint('idle'),
+    fire: shotgunPaint('fire'),
+    pump1: shotgunPaint('pump1'),
+    pump2: shotgunPaint('pump2'),
   },
   chainsaw: {
-    idle1: drawPixels(chainsawFrame(0, 0, false), SAW_PAL, VM_SCALE),
-    idle2: drawPixels(chainsawFrame(1, 0, false), SAW_PAL, VM_SCALE),
-    cut: drawPixels(chainsawFrame(1, 3, true), SAW_PAL, VM_SCALE),
+    idle1: polish(drawPixels(chainsawFrame(0, 0, false), SAW_PAL, VM_SCALE)),
+    idle2: polish(drawPixels(chainsawFrame(1, 0, false), SAW_PAL, VM_SCALE)),
+    cut: polish(drawPixels(chainsawFrame(1, 3, true), SAW_PAL, VM_SCALE)),
   },
   spell: {
-    idle1: drawPixels(spellFrame(0, 0, false), SPELL_PAL, VM_SCALE),
-    idle2: drawPixels(spellFrame(1, 0, false), SPELL_PAL, VM_SCALE),
-    cast: drawPixels(spellFrame(0, -6, true), SPELL_PAL, VM_SCALE),
-    recover: drawPixels(spellFrame(1, 4, false), SPELL_PAL, VM_SCALE),
+    idle1: polish(drawPixels(spellFrame(0, 0, false), SPELL_PAL, VM_SCALE)),
+    idle2: polish(drawPixels(spellFrame(1, 0, false), SPELL_PAL, VM_SCALE)),
+    cast: polish(drawPixels(spellFrame(0, -6, true), SPELL_PAL, VM_SCALE)),
+    recover: polish(drawPixels(spellFrame(1, 4, false), SPELL_PAL, VM_SCALE)),
   },
 };
 

@@ -3,6 +3,7 @@ import {
   pickTarget,
   pickTargetAt,
   castRay,
+  hasLineOfSight,
   VIEW_W,
   VIEW_H,
   type Scene,
@@ -14,10 +15,12 @@ import {
   makeBloodParticle,
   makeDot,
   makeFireball,
-  makeWallTexture,
+  makeGlowBall,
+  makeRocket,
   makeDoorTexture,
   makeInnerDoorTexture,
 } from './sprites';
+import { makeThemes, makePoolDecals, makeHazardFloor, texPixels } from './textures';
 import { weaponFrames, muzzleFlashFrames, casingImg, VM_SCALE } from './weapons';
 import {
   drawHud,
@@ -56,7 +59,7 @@ fitCanvas();
 type Screen = 'boot' | 'title' | 'play' | 'reply' | 'trans' | 'win' | 'dead' | 'tally';
 
 type EnemyKind = 'imp' | 'swarmer' | 'bot' | 'phantom' | 'cursed' | 'boss';
-type EnemyState = 'chase' | 'windup' | 'attack' | 'pain';
+type EnemyState = 'chase' | 'windup' | 'attack' | 'pain' | 'ranged';
 
 interface Enemy {
   msg: UnreadMsg;
@@ -82,6 +85,9 @@ interface Enemy {
   growlT: number;
   blinkT: number;
   sawT: number;
+  corpse: boolean;
+  shotCd: number; // ranged cooldown
+  burst: number; // bot burst counter
 }
 
 interface Particle {
@@ -113,6 +119,20 @@ interface Projectile {
   img: HTMLCanvasElement;
 }
 
+// Enemy-thrown fireball/bolt/rocket — straight-line, dodgeable.
+interface Shot {
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  life: number;
+  size: number;
+  img: HTMLCanvasElement;
+  trail: HTMLCanvasElement;
+  smoke: boolean;
+}
+
 interface LevelStats {
   kills: number;
   replies: number;
@@ -142,6 +162,7 @@ const G = {
   particles: [] as Particle[],
   casings: [] as Casing[],
   projectile: null as Projectile | null,
+  shots: [] as Shot[],
   castLock: false,
   weapon: 'pistol' as Weapon,
   fireT: 0,
@@ -162,7 +183,13 @@ const G = {
   pitch: 0,
   shakeT: 0,
   mapHeld: false,
-  banners: [] as { text: string; color: string; until: number }[],
+  banners: [] as {
+    text: string;
+    color: string;
+    until: number;
+    slot: 'level' | 'room' | 'boss' | 'hint' | 'misc';
+  }[],
+  hintShown: false as boolean,
   transT: 0,
   cleared: new Set<number>(),
   busy: 0,
@@ -171,10 +198,22 @@ const G = {
   levelStats: { kills: 0, replies: 0, stars: 0, time: 0 } as LevelStats,
   levelT0: 0,
   bestStreak: 0,
+  decals: [] as { x: number; y: number; img: HTMLCanvasElement; size: number; alpha: number }[],
+  roomLight: new Float32Array(0),
+  flickV: [] as number[],
+  flickT: [] as number[],
+  fps: 60,
+  face: { state: 'look' as 'look' | 'ouch' | 'grin', until: 0, lookDir: 0, lookT: 0, deadT: 0 },
   msg: '',
 };
 
-const wallTex = makeWallTexture();
+const THEMES = makeThemes();
+const hazardFloorImg = makeHazardFloor();
+const floorTexs = [...THEMES.map((t) => texPixels(t.floor)), texPixels(hazardFloorImg)];
+const ceilTexs = THEMES.map((t) => texPixels(t.ceil));
+const wallTexs = THEMES.map((t) => t.wall);
+const trimTex = THEMES[0].trim!;
+const poolImgs = makePoolDecals();
 const doorTex = makeDoorTexture();
 const innerDoorTex = makeInnerDoorTexture();
 const bloodImg = makeBloodParticle();
@@ -183,6 +222,14 @@ const holeImg = makeDot('#101010');
 const sparkImg = makeDot('#f08020', '#f0c030');
 const tealImg = makeDot('#3aa0a0', '#c0f0f0');
 const fireballImg = makeFireball();
+const smokeImg = makeDot('#808080', '#505050');
+// Enemy projectiles: img, speed, size, trail particle.
+const SHOT_DEF: Record<string, { img: HTMLCanvasElement; speed: number; size: number; trail: HTMLCanvasElement; smoke: boolean; cdMin: number; cdMax: number }> = {
+  imp: { img: makeGlowBall('#f0c030', '#e06010'), speed: 5.5, size: 0.18, trail: sparkImg, smoke: false, cdMin: 3, cdMax: 5 },
+  cursed: { img: makeGlowBall('#40ff60', '#1a6a20'), speed: 6.5, size: 0.2, trail: tealImg, smoke: false, cdMin: 2.5, cdMax: 4 },
+  bot: { img: makeGlowBall('#60ff80', '#20a040'), speed: 8, size: 0.12, trail: tealImg, smoke: false, cdMin: 4, cdMax: 4 },
+  boss: { img: makeRocket(), speed: 5, size: 0.24, trail: smokeImg, smoke: true, cdMin: 2.5, cdMax: 2.5 },
+};
 
 const SCORE: Record<RaidAction | 'reply', number> = {
   archive: 10,
@@ -196,12 +243,12 @@ const KIND: Record<
   EnemyKind,
   { speed: number; strafeAmp: number; strafeMin: number; strafeMax: number; windup: number; scale: number; hp: number }
 > = {
-  imp: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 1, hp: 1 },
-  swarmer: { speed: 1.7, strafeAmp: 0.9, strafeMin: 0.3, strafeMax: 0.6, windup: 0.25, scale: 0.6, hp: 1 },
-  bot: { speed: 0.7, strafeAmp: 0, strafeMin: 99, strafeMax: 99, windup: 0.6, scale: 1, hp: 2 },
-  phantom: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 1, hp: 1 },
-  cursed: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 1, hp: 1 },
-  boss: { speed: 0.45, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.6, scale: 2, hp: 1 },
+  imp: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 0.9, hp: 1 },
+  swarmer: { speed: 1.7, strafeAmp: 0.9, strafeMin: 0.3, strafeMax: 0.6, windup: 0.25, scale: 0.5, hp: 1 },
+  bot: { speed: 0.7, strafeAmp: 0, strafeMin: 99, strafeMax: 99, windup: 0.6, scale: 0.85, hp: 2 },
+  phantom: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 0.75, hp: 1 },
+  cursed: { speed: 1, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.45, scale: 1.15, hp: 1 },
+  boss: { speed: 0.45, strafeAmp: 0.5, strafeMin: 0.8, strafeMax: 1.4, windup: 0.6, scale: 1.6, hp: 1 },
 };
 
 // Kind roll for plain mail by level (deterministic per message id).
@@ -242,8 +289,11 @@ async function boot() {
   }
 }
 
-function banner(text: string, color = '#f0d040', secs = 2.2) {
-  G.banners.push({ text, color, until: performance.now() / 1000 + secs });
+type BannerSlot = 'level' | 'room' | 'boss' | 'hint' | 'misc';
+
+function banner(text: string, color = '#f0d040', secs = 2.2, slot: BannerSlot = 'misc') {
+  G.banners = G.banners.filter((b) => b.slot !== slot);
+  G.banners.push({ text, color, until: performance.now() / 1000 + secs, slot });
 }
 
 // ------------------------------------------------------------ level load --
@@ -273,6 +323,7 @@ function loadLevel(i: number) {
   G.enemies = [];
   G.particles = [];
   G.casings = [];
+  G.shots = [];
   G.projectile = null;
   G.castLock = false;
   G.exitOpen = false;
@@ -284,6 +335,10 @@ function loadLevel(i: number) {
   G.roomSpawned = new Set();
   G.roomCleared = new Set();
   G.roomVisited = new Set();
+  G.decals = [];
+  G.roomLight = new Float32Array(G.map.rooms.length);
+  G.flickV = new Array(G.map.rooms.length).fill(1);
+  G.flickT = G.map.rooms.map((r) => (r.flicker ? 0.08 + Math.random() * 0.17 : 0));
 
   const room = G.rooms[i];
   const unread = [...room.unread].sort((a, b) => Number(a.boss) - Number(b.boss));
@@ -311,11 +366,15 @@ function loadLevel(i: number) {
   G.currentRoom = spawnRoom.id;
   G.roomVisited.add(spawnRoom.id);
 
-  banner(`LEVEL ${i + 1}: ${room.name} — ${unread.length} UNREAD`, '#e06030', 3);
-  if (bossMsg) banner('something important waits at the end…', '#908880', 3.5);
+  G.hintShown = false;
+  banner(`LEVEL ${i + 1}: ${room.name} — ${unread.length} UNREAD`, '#e06030', 3, 'level');
+  if (bossMsg && !G.hintShown) {
+    G.hintShown = true;
+    banner('something important waits at the end…', '#908880', 3.5, 'hint');
+  }
   if (unread.length === 0) {
     G.exitOpen = true;
-    banner('ALREADY CLEAN — HEAD FOR THE EXIT', '#40e060', 3);
+    banner('ALREADY CLEAN — HEAD FOR THE EXIT', '#40e060', 3, 'room');
   }
 }
 
@@ -358,6 +417,9 @@ function spawnEnemy(msg: UnreadMsg, room: { id: number; cells: { x: number; y: n
     growlT: 1 + Math.random() * 2,
     blinkT: 2 + Math.random() * 1.5,
     sawT: 0,
+    corpse: false,
+    shotCd: 1 + Math.random() * 2,
+    burst: 0,
   });
   const pi = G.pending.findIndex((m) => m.id === msg.id);
   if (pi >= 0) G.pending.splice(pi, 1);
@@ -395,18 +457,53 @@ function spawnBlood(e: Enemy, n: number) {
   spawnP(e.x, e.y, 0.5, bloodImg, n, {});
 }
 
+// A demon hurls a fireball at the player's current position — dodgeable.
+function fireShot(e: Enemy) {
+  const def = SHOT_DEF[e.kind];
+  if (!def) return;
+  const dx = G.px - e.x;
+  const dy = G.py - e.y;
+  const d = Math.hypot(dx, dy) || 1;
+  G.shots.push({
+    x: e.x + (dx / d) * 0.4,
+    y: e.y + (dy / d) * 0.4,
+    z: 0.55,
+    vx: (dx / d) * def.speed,
+    vy: (dy / d) * def.speed,
+    life: 3,
+    size: def.size,
+    img: def.img,
+    trail: def.trail,
+    smoke: def.smoke,
+  });
+  sfx.fireball();
+}
+
+function shotCooldown(e: Enemy) {
+  const def = SHOT_DEF[e.kind];
+  if (!def) return;
+  e.shotCd = def.cdMin + Math.random() * (def.cdMax - def.cdMin);
+}
+
 // --------------------------------------------------------------- actions --
-function doAction(enemy: Enemy, action: RaidAction) {
+function doAction(enemy: Enemy, action: RaidAction, gib = false) {
   enemy.dying = 0.0001;
   const boss = enemy.kind === 'boss';
   if (boss) {
     sfx.bossDie();
     G.shakeT = 0.4;
     spawnBlood(enemy, 30);
+  } else if (gib) {
+    // Chunky gibs for point-blank shotgun kills.
+    sfx.demonDie();
+    spawnP(enemy.x, enemy.y, 0.5, bloodImg, 6, { speed: 2.2, size: 0.12, life: 0.8 });
   } else {
     sfx.demonDie();
     spawnBlood(enemy, 10);
   }
+  G.face.state = 'grin';
+  G.face.until = performance.now() / 1000 + 0.8;
+  G.face.deadT = 0;
   G.streak++;
   G.bestStreak = Math.max(G.bestStreak, G.streak);
   G.score += boss && action === 'star' ? 50 : SCORE[action];
@@ -638,7 +735,8 @@ function fire() {
         } else if (n >= 2) {
           G.hitmarkT = 0.12;
           G.hitmarkShield = false;
-          doAction(e, 'trash');
+          const dd = Math.hypot(e.x - G.px, e.y - G.py);
+          doAction(e, 'trash', dd < 2.5);
         } else {
           bulletHits(e, 'trash', 1);
         }
@@ -712,6 +810,35 @@ function update(dt: number, now: number) {
     else if (st.open > st.target) st.open = Math.max(st.target, st.open - dt * 2);
   }
 
+  // Sector lighting: base theme light + jitter, with flicker rooms blinking.
+  if (G.map) {
+    G.map.rooms.forEach((r, i) => {
+      let l = THEMES[r.theme].light + r.lightJ;
+      if (r.flicker) {
+        G.flickT[i] -= dt;
+        if (G.flickT[i] <= 0) {
+          G.flickT[i] = 0.08 + Math.random() * 0.17;
+          G.flickV[i] = 0.55 + Math.random() * 0.45;
+        }
+        l *= G.flickV[i];
+      }
+      G.roomLight[i] = l;
+    });
+  }
+
+  // Status-bar face: timed states, wandering eyes, glum when cold.
+  {
+    const f = G.face;
+    f.lookT -= dt;
+    if (f.lookT <= 0) {
+      f.lookT = 0.8 + Math.random() * 1.2;
+      f.lookDir = Math.floor(Math.random() * 3) - 1;
+    }
+    if (now > f.until) f.state = 'look';
+    if (G.streak > 0) f.deadT = 0;
+    else if (f.deadT === 0) f.deadT = now;
+  }
+
   if (G.screen !== 'play' || !G.map) return;
 
   // Turning — mouse (pointer lock) + arrow fallback.
@@ -779,7 +906,7 @@ function update(dt: number, now: number) {
         else sfx.alert();
         for (const msg of batch) spawnEnemy(msg, room);
         const boss = batch.find((m) => m.boss);
-        if (boss) banner(`BOSS: ${boss.subject}`, '#f04040', 3.5);
+        if (boss) banner(`BOSS: ${boss.subject}`, '#f04040', 3.5, 'boss');
       }
     }
   }
@@ -789,16 +916,16 @@ function update(dt: number, now: number) {
   for (const r of G.map.rooms) {
     const id = r.id;
     if (r.isSpawn || G.roomCleared.has(id) || !G.roomSpawned.has(id)) continue;
-    if (G.enemies.some((e) => e.roomId === id && !e.dead)) continue;
+    if (G.enemies.some((e) => e.roomId === id && !e.dead && e.dying === 0)) continue;
     G.roomCleared.add(id);
     for (const d of r.doors) setDoor(d, 1);
     const hadMail = (G.roomBatches.get(id) || []).length > 0;
     if (r.isBoss) {
       G.exitOpen = true;
-      banner('THE EXIT GRINDS OPEN', '#40e060', 3);
+      banner('THE EXIT GRINDS OPEN', '#40e060', 3, 'room');
       sfx.door();
     } else if (hadMail) {
-      banner('ROOM CLEARED', '#40e060', 1.5);
+      banner('ROOM CLEARED', '#40e060', 1.5, 'room');
     }
   }
 
@@ -833,6 +960,42 @@ function update(dt: number, now: number) {
     }
   }
 
+  // Enemy projectiles — straight shots you can sidestep.
+  for (const sh of G.shots) {
+    sh.life -= dt;
+    const nx = sh.x + sh.vx * dt;
+    const ny = sh.y + sh.vy * dt;
+    spawnP(sh.x, sh.y, sh.z, sh.trail, 1, {
+      speed: 0.2,
+      life: sh.smoke ? 0.6 : 0.25,
+      size: sh.smoke ? 0.08 : 0.05,
+      vzMin: 0,
+      vzMax: 0.2,
+      grav: 0,
+    });
+    if (isSolid(G.map!, nx, ny, doorOpen, G.exitOpen)) {
+      // wall impact — small burst + hiss
+      spawnP(sh.x, sh.y, sh.z, sparkImg, 6, { speed: 1, life: 0.3, size: 0.06 });
+      sfx.hiss();
+      sh.life = 0;
+      continue;
+    }
+    sh.x = nx;
+    sh.y = ny;
+    if (Math.hypot(sh.x - G.px, sh.y - G.py) < 0.4) {
+      // player hit — same pain as a melee strike
+      spawnP(sh.x, sh.y, sh.z, sparkImg, 10, { speed: 1.5, life: 0.4, size: 0.08 });
+      if (G.streak > 0) banner('STREAK BROKEN', '#f04030', 1.5);
+      G.streak = 0;
+      G.hurtT = 0.5;
+      G.face.state = 'ouch';
+      G.face.until = now / 1000 + 0.6;
+      sfx.hurt();
+      sh.life = 0;
+    }
+  }
+  G.shots = G.shots.filter((sh) => sh.life > 0);
+
   // Particles — ballistic bits.
   for (const p of G.particles) {
     p.life -= dt;
@@ -854,7 +1017,21 @@ function update(dt: number, now: number) {
     e.glow = Math.max(0, e.glow - dt * 3);
     if (e.dying > 0) {
       e.dying += dt / 0.6;
-      if (e.dying >= 1) e.dead = true;
+      if (e.dying >= 1 && !e.corpse) {
+        // Become a floor corpse — stays rendered, no collision, untargetable.
+        e.corpse = true;
+        e.dying = 1;
+        // Blood pool decal where it fell.
+        G.decals.push({
+          x: e.x,
+          y: e.y,
+          img: poolImgs[Math.floor(Math.random() * poolImgs.length)],
+          size: 0.55 + Math.random() * 0.3,
+          alpha: 0.85,
+        });
+        const corpses = G.enemies.filter((o) => o.corpse);
+        if (corpses.length > 40) corpses[0].dead = true; // drop oldest
+      }
       continue;
     }
     const k = KIND[e.kind];
@@ -914,9 +1091,32 @@ function update(dt: number, now: number) {
         e.growlT = 2.5 + Math.random() * 1.5;
         if (dist < 7) sfx.growl();
       }
-      if (dist < 1.0) {
+      // Ranged demons hurl projectiles when you keep your distance.
+      e.shotCd -= dt;
+      if (
+        e.shotCd <= 0 &&
+        SHOT_DEF[e.kind] &&
+        dist >= 3 &&
+        dist <= 10 &&
+        hasLineOfSight(G.map!, e.x, e.y, G.px, G.py, geom())
+      ) {
+        e.state = 'ranged';
+        e.stateT = 0.5;
+      } else if (dist < 1.0) {
         e.state = 'windup';
         e.stateT = k.windup;
+      }
+    } else if (e.state === 'ranged') {
+      if (e.stateT <= 0) {
+        fireShot(e);
+        if (e.kind === 'bot' && e.burst < 2) {
+          e.burst++;
+          e.stateT = 0.15; // 3-shot burst
+        } else {
+          e.burst = 0;
+          shotCooldown(e);
+          e.state = 'chase';
+        }
       }
     } else if (e.state === 'windup') {
       if (e.stateT <= 0) {
@@ -926,6 +1126,8 @@ function update(dt: number, now: number) {
           if (G.streak > 0) banner('STREAK BROKEN', '#f04030', 1.5);
           G.streak = 0;
           G.hurtT = 0.5;
+          G.face.state = 'ouch';
+          G.face.until = now / 1000 + 0.6;
           sfx.hurt();
           const nx = e.x + (dx / dist) * 0.3;
           const ny = e.y + (dy / dist) * 0.3;
@@ -939,7 +1141,7 @@ function update(dt: number, now: number) {
 
     if (e.state === 'chase') {
       e.animT += dt * moveSpeed * 4;
-      e.frame = Math.floor(e.animT) % 2;
+      e.frame = Math.floor(e.animT) % 4;
     }
     const ddx = e.x - e.lastX;
     if (Math.abs(ddx) > 1e-4) e.flipX = ddx < 0;
@@ -1000,24 +1202,31 @@ function sceneObj(): Scene {
     dir: G.dir,
     exitOpen: G.exitOpen,
     doorOpen,
-    wallTex,
+    wallTexs,
+    trimTex,
     doorTex,
     innerDoorTex,
+    floorTexs,
+    ceilTexs,
+    roomLight: G.roomLight,
+    decals: G.decals,
     time: performance.now() / 1000,
     light: G.light,
     pitch: G.pitch,
     sprites: G.enemies.map((e) => {
       const f = demons[e.kind];
-      let img = f.walk[e.frame];
+      let img = f.walk[e.frame % f.walk.length];
       let yOff = 0;
       if (e.dying > 0) {
-        const di = Math.min(2, Math.floor(e.dying * 3));
+        const di = Math.min(4, Math.floor(e.dying * 5));
         img = f.death[di];
-        yOff = di * 0.1;
+        yOff = di * 0.04;
       } else if (e.state === 'pain') {
         img = f.pain;
-      } else if (e.state === 'windup' || e.state === 'attack') {
-        img = f.attack;
+      } else if (e.state === 'windup') {
+        img = f.attack[0];
+      } else if (e.state === 'attack' || e.state === 'ranged') {
+        img = f.attack[1];
       }
       return {
         x: e.x,
@@ -1050,6 +1259,15 @@ function sceneObj(): Scene {
       ...(G.projectile
         ? [{ x: G.projectile.x, y: G.projectile.y, z: G.projectile.z, img: G.projectile.img, size: 0.22, alpha: 1 }]
         : []),
+      ...G.shots.map((sh) => ({
+        x: sh.x,
+        y: sh.y,
+        z: sh.z,
+        img: sh.img,
+        size: sh.size,
+        alpha: 1,
+        additive: true,
+      })),
     ],
   };
 }
@@ -1087,6 +1305,14 @@ function vmDraw(): VmDraw {
 
 // Set while the chainsaw has a live target under the blade (for the cut frame).
 let pickTargetCache = false;
+
+// Mugshot state resolved for the HUD ('glum' = streak dead >5s).
+function faceState(nowMs: number): 'look' | 'ouch' | 'grin' | 'glum' {
+  const f = G.face;
+  if (nowMs / 1000 < f.until) return f.state;
+  if (G.streak === 0 && f.deadT > 0 && nowMs / 1000 - f.deadT > 5) return 'glum';
+  return 'look';
+}
 
 function renderFrame() {
   ctx.fillStyle = '#000';
@@ -1151,6 +1377,7 @@ function renderFrame() {
     apm: G.actions.length,
     score: G.score,
     weapon: G.weapon,
+    face: { state: faceState(performance.now()), lookDir: G.face.lookDir },
     roomName: G.rooms[G.level]?.name || '',
     rooms: G.rooms.map((r, i) => ({
       name: r.name,
@@ -1188,7 +1415,11 @@ function renderFrame() {
   }
 
   const now = performance.now() / 1000;
-  const lines = G.banners.slice(-3).map((b) => ({ text: b.text, color: b.color }));
+  const slotOrder: Record<BannerSlot, number> = { level: 0, hint: 1, boss: 2, room: 3, misc: 4 };
+  const lines = [...G.banners]
+    .sort((a, b) => slotOrder[a.slot] - slotOrder[b.slot])
+    .slice(0, 3)
+    .map((b) => ({ text: b.text, color: b.color }));
   if (lines.length) drawCenterText(ctx, lines);
 
   if (G.hurtT > 0) {
@@ -1332,6 +1563,7 @@ function frame() {
   const now = performance.now();
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
+  if (dt > 0) G.fps = G.fps * 0.9 + (1 / dt) * 0.1;
   update(dt, now / 1000);
   renderFrame();
   requestAnimationFrame(frame);

@@ -13,6 +13,10 @@ export interface Room {
   isSpawn: boolean;
   isBoss: boolean;
   dist: number; // BFS distance from spawn room
+  theme: number; // index into THEME order: 0 wood 1 metal 2 marble 3 brick 4 hell
+  hazard: boolean; // yellow/black floor override
+  flicker: boolean; // blinking-sector light
+  lightJ: number; // seeded sector-light jitter ±0.15
 }
 
 export interface Door {
@@ -32,6 +36,12 @@ export interface LevelMap {
   rooms: Room[];
   doors: Door[];
   doorIndex: Map<string, number>; // `${gx},${gy}` -> door id for 'd' cells
+  // Per-cell render data (flat w*h arrays)
+  cellTheme: Uint8Array; // theme idx per cell
+  cellRoom: Int16Array; // owning room id (walls/doors -> adjacent room), -1 outer
+  cellFloor: Uint8Array; // floor tex idx (0..4 theme floors, 5 = hazard)
+  wallTheme: Uint8Array; // theme idx for '#' cells
+  wallVariant: Uint8Array; // wall variant idx, 255 = door-frame trim
 }
 
 function mulberry32(seed: number): () => number {
@@ -119,6 +129,10 @@ export function makeLevel(level: number, seed = level * 7919 + 13): LevelMap {
         isSpawn: gx === 0 && gy === rows - 1,
         isBoss: false,
         dist: -1,
+        theme: 0,
+        hazard: false,
+        flicker: false,
+        lightJ: 0,
       });
     }
   }
@@ -259,6 +273,68 @@ export function makeLevel(level: number, seed = level * 7919 + 13): LevelMap {
     exit.y = best.y;
   }
 
+  // ---- Themes ------------------------------------------------------------
+  // Spawn room brick/metal, boss room hell, rest random; one non-boss room
+  // gets the hazard floor, another gets the flickering light.
+  for (const r of rooms) {
+    r.lightJ = (rng() - 0.5) * 0.16;
+    if (r.isSpawn) r.theme = rng() < 0.5 ? 3 : 1;
+    else if (r.isBoss) r.theme = 4;
+    else r.theme = Math.floor(rng() * 4);
+  }
+  const themable = rooms.filter((r) => !r.isBoss);
+  if (themable.length) {
+    themable[Math.floor(rng() * themable.length)].hazard = true;
+    const fk = rooms.filter((r) => !r.isSpawn && !r.isBoss);
+    if (fk.length) fk[Math.floor(rng() * fk.length)].flicker = true;
+  }
+
+  // Per-cell render data.
+  const cellTheme = new Uint8Array(w * h);
+  const cellRoom = new Int16Array(w * h).fill(-1);
+  const cellFloor = new Uint8Array(w * h);
+  const wallTheme = new Uint8Array(w * h);
+  const wallVariant = new Uint8Array(w * h);
+  const roomOf = new Int16Array(w * h).fill(-1);
+  for (const r of rooms) for (const c of r.cells) roomOf[c.y * w + c.x] = r.id;
+  const hash = (x: number, y: number) => {
+    let n = (x * 73856093) ^ (y * 19349663) ^ (seed * 83492791);
+    n = Math.imul(n ^ (n >>> 13), 0x5bd1e995);
+    return (n ^ (n >>> 15)) >>> 0;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      // owning room: interior cell's own room, else lowest-id adjacent room
+      let rid = roomOf[i];
+      if (rid < 0) {
+        let best = -1;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const n = roomOf[ny * w + nx];
+          if (n >= 0 && (best < 0 || n < best)) best = n;
+        }
+        rid = best;
+      }
+      cellRoom[i] = rid;
+      const th = rid >= 0 ? rooms[rid].theme : 1;
+      cellTheme[i] = th;
+      cellFloor[i] = rid >= 0 && rooms[rid].hazard ? 5 : th;
+      if (grid[y][x] === '#') {
+        wallTheme[i] = th;
+        // door frames use the trim texture
+        let trim = false;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const c = grid[y + dy]?.[x + dx];
+          if (c === 'd' || c === 'D') trim = true;
+        }
+        wallVariant[i] = trim ? 255 : hash(x, y) % 3;
+      }
+    }
+  }
+
   const sr = rooms[spawnRoom];
   return {
     grid: grid.map((r) => r.join('')),
@@ -269,5 +345,10 @@ export function makeLevel(level: number, seed = level * 7919 + 13): LevelMap {
     rooms,
     doors,
     doorIndex,
+    cellTheme,
+    cellRoom,
+    cellFloor,
+    wallTheme,
+    wallVariant,
   };
 }

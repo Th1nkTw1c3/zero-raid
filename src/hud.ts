@@ -17,12 +17,13 @@ export interface HudState {
   apm: number;
   score: number;
   weapon: Weapon;
+  face: { state: 'look' | 'ouch' | 'grin' | 'glum'; lookDir: number };
   roomName: string;
   rooms: { name: string; remaining: number; cleared: boolean; current: boolean }[];
   demo: boolean;
 }
 
-const BAR_H = 34;
+const BAR_H = 40;
 
 export function drawHud(ctx: CanvasRenderingContext2D, s: HudState): void {
   const y0 = VIEW_H; // status bar starts below the 3D viewport
@@ -41,35 +42,32 @@ export function drawHud(ctx: CanvasRenderingContext2D, s: HudState): void {
   ctx.font = '8px monospace';
   ctx.textAlign = 'left';
 
-  // STREAK (health)
-  label(ctx, 'STREAK', 8, y0 + 8, '#7a706a');
-  ctx.font = 'bold 14px monospace';
-  ctx.fillStyle = s.streak > 0 ? '#f04030' : '#603030';
-  ctx.fillText(String(s.streak).padStart(2, '0'), 8, y0 + 22);
+  // STREAK (health) — big red doom digits
+  label(ctx, 'STREAK', 8, y0 + 7, '#7a706a');
+  doomNum(ctx, String(s.streak).padStart(2, '0'), 8, y0 + 23, s.streak > 0 ? '#f03020' : '#603030');
 
   // APM (ammo)
   ctx.font = '8px monospace';
-  label(ctx, 'APM', 58, y0 + 8, '#7a706a');
-  ctx.font = 'bold 14px monospace';
-  ctx.fillStyle = '#e8d040';
-  ctx.fillText(String(Math.round(s.apm)).padStart(3, '0'), 58, y0 + 22);
+  label(ctx, 'APM', 56, y0 + 7, '#7a706a');
+  doomNum(ctx, String(Math.round(s.apm)).padStart(3, '0'), 56, y0 + 23, '#f03020');
 
-  // SCORE
+  // SCORE — yellow
   ctx.font = '8px monospace';
-  label(ctx, 'SCORE', 112, y0 + 8, '#7a706a');
-  ctx.font = 'bold 14px monospace';
-  ctx.fillStyle = '#e8e0d0';
-  ctx.fillText(String(s.score).padStart(6, '0'), 112, y0 + 22);
+  label(ctx, 'SCORE', 106, y0 + 7, '#7a706a');
+  doomNum(ctx, String(s.score).padStart(6, '0'), 106, y0 + 23, '#f0d040');
+
+  // The Doomguy — face reads your streak.
+  drawFace(ctx, s.face.state, s.face.lookDir, s.streak, 178, y0 + 5);
 
   // Weapon
   ctx.font = '8px monospace';
-  label(ctx, 'WEAPON', 178, y0 + 8, '#7a706a');
+  label(ctx, 'WEAPON', 214, y0 + 7, '#7a706a');
   ctx.font = 'bold 11px monospace';
   ctx.fillStyle = '#c0b8a8';
-  ctx.fillText(WEAPON_META[s.weapon].name, 178, y0 + 21);
+  ctx.fillText(WEAPON_META[s.weapon].name, 214, y0 + 20);
   ctx.font = '7px monospace';
   ctx.fillStyle = '#706a60';
-  ctx.fillText(`=${WEAPON_META[s.weapon].verb}`, 178, y0 + 29);
+  ctx.fillText(`=${WEAPON_META[s.weapon].verb}`, 214, y0 + 30);
 
   // Room name
   ctx.font = 'bold 9px monospace';
@@ -91,6 +89,121 @@ function label(ctx: CanvasRenderingContext2D, text: string, x: number, y: number
   ctx.font = '7px monospace';
   ctx.fillStyle = color;
   ctx.fillText(text, x, y);
+}
+
+// Big outlined digits, Doom status-bar style.
+function doomNum(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  color: string,
+) {
+  ctx.font = 'bold 12px monospace';
+  ctx.strokeStyle = '#100c0a';
+  ctx.lineWidth = 2;
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
+
+// ---- Doomguy mugshot -------------------------------------------------------
+// 24x29 procedural face; cached per (state, lookDir, bloodLevel).
+const faceCache = new Map<string, HTMLCanvasElement>();
+
+function faceImg(state: string, lookDir: number, blood: number): HTMLCanvasElement {
+  const key = `${state}:${lookDir}:${blood}`;
+  const hit = faceCache.get(key);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = 24;
+  c.height = 29;
+  const g = c.getContext('2d')!;
+  const skin = blood >= 3 ? '#a87850' : '#c89060';
+  const shade = '#8a5c38';
+  // skull
+  g.fillStyle = skin;
+  g.fillRect(5, 4, 14, 20);
+  g.fillRect(7, 24, 10, 3); // jaw
+  // hair — dark buzz
+  g.fillStyle = '#2a2018';
+  g.fillRect(4, 1, 16, 5);
+  g.fillRect(4, 4, 2, 4);
+  g.fillRect(18, 4, 2, 4);
+  // brow shading
+  g.fillStyle = shade;
+  g.fillRect(5, 11, 14, 1);
+  // eyes
+  const ex = lookDir; // -1 left .. +1 right
+  if (state === 'ouch') {
+    // squeezed shut
+    g.fillStyle = '#201810';
+    g.fillRect(7, 13, 3, 1);
+    g.fillRect(14, 13, 3, 1);
+  } else {
+    g.fillStyle = '#f0f0e8';
+    g.fillRect(7 + ex, 12, 4, 3);
+    g.fillRect(14 + ex, 12, 4, 3);
+    g.fillStyle = '#181008';
+    g.fillRect(8 + ex * 2, 13, 2, 2);
+    g.fillRect(15 + ex * 2, 13, 2, 2);
+  }
+  // nose
+  g.fillStyle = shade;
+  g.fillRect(11, 15, 2, 4);
+  // mouth
+  g.fillStyle = '#38180c';
+  if (state === 'grin') {
+    g.fillRect(8, 20, 8, 3);
+    g.fillStyle = '#e0d8c0';
+    g.fillRect(8, 20, 8, 1);
+  } else if (state === 'ouch') {
+    g.fillRect(9, 20, 6, 4);
+  } else if (state === 'glum') {
+    g.fillRect(8, 22, 8, 1);
+    g.fillRect(7, 21, 1, 1);
+    g.fillRect(16, 21, 1, 1);
+  } else {
+    g.fillRect(9, 21, 6, 1);
+  }
+  // chin shadow + ears
+  g.fillStyle = shade;
+  g.fillRect(8, 26, 8, 1);
+  g.fillRect(3, 12, 2, 5);
+  g.fillRect(19, 12, 2, 5);
+  // blood by streak
+  if (blood > 0) {
+    g.fillStyle = '#901010';
+    if (blood >= 1) g.fillRect(6, 6, 3, 4); // forehead cut
+    if (blood >= 2) {
+      g.fillRect(16, 9, 2, 8);
+      g.fillRect(4, 16, 2, 5);
+    }
+    if (blood >= 3) {
+      g.fillStyle = 'rgba(120,10,10,0.55)';
+      g.fillRect(5, 4, 14, 20); // heavy soak
+      g.fillStyle = '#701010';
+      g.fillRect(9, 8, 6, 3);
+    }
+  }
+  faceCache.set(key, c);
+  return c;
+}
+
+function drawFace(
+  ctx: CanvasRenderingContext2D,
+  state: string,
+  lookDir: number,
+  streak: number,
+  x: number,
+  y: number,
+) {
+  // blood level by streak: >=10 clean, 5-9 cuts, 1-4 bloody, 0 very bloody
+  const blood = streak >= 10 ? 0 : streak >= 5 ? 1 : streak >= 1 ? 2 : 3;
+  const img = faceImg(state, lookDir, blood);
+  ctx.drawImage(img, x, y);
+  ctx.strokeStyle = '#161311';
+  ctx.strokeRect(x - 0.5, y - 0.5, img.width + 1, img.height + 1);
 }
 
 // Room strip mini-map, top-right of the 3D view.
