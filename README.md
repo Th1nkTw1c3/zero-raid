@@ -12,12 +12,16 @@ email-themed wallpaper: the only way to win is to actually hit inbox zero.
 ## How it plays
 
 Your Gmail categories are dungeon levels: **Primary → Promotions → Updates →
-Social**. Unread mail spawns as demons with the subject line floating overhead.
-A room's exit door only grinds open when that category has **zero unread**.
+Social**. Each level is a maze of rooms joined by sliding doors; unread mail
+(capped at 20 per category) is dealt out across the rooms as demons with the
+subject line floating overhead. A room's doors unlock when it's cleared; the
+**boss** — the most important unread, server-ranked — holds the farthest room
+and the exit. Shoot barrels. Watch for fireballs.
 
 | Control | Weapon | Real Gmail action |
 |---|---|---|
-| `WASD` / arrows | — | Move / turn (click for mouse-look) |
+| `WASD` / arrows, mouse | — | Move / turn, look up/down (click to lock pointer) |
+| `TAB` (hold) | — | Automap |
 | `1` + click | Pistol | **Archive** (remove INBOX+UNREAD) |
 | `2` + click (or right-click) | Shotgun | **Trash** — cone AoE |
 | `3` + hold click | Chainsaw | **Star** — works on anything, incl. cursed |

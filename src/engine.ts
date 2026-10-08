@@ -138,10 +138,13 @@ export interface SpriteDraw {
   dying: number; // 0 = alive, 0..1 death anim progress
   bob: number; // phase offset
   glow: number; // shield-hit flash 0..1
+  flash?: number; // pain white flash 0..0.6
   flipX: boolean;
   scale: number;
   yOff: number;
   alpha: number; // phantoms flicker
+  hang?: boolean; // anchored to the ceiling (gore, bodies)
+  enemy?: number; // index into the enemy list — set only for demons
 }
 
 export interface ParticleDraw {
@@ -169,7 +172,7 @@ export interface Scene extends SceneGeom {
   wallTexs: HTMLCanvasElement[][]; // wall variants per theme
   trimTexs: HTMLCanvasElement[]; // door-frame texture per theme
   doorTex: HTMLCanvasElement;
-  innerDoorTex: HTMLCanvasElement;
+  doorTexs: HTMLCanvasElement[]; // interior door slab per theme
   floorTexs: Uint8ClampedArray[]; // 64x64 RGBA, index = map.cellFloor
   ceilTexs: Uint8ClampedArray[]; // index = map.cellTheme
   roomLight: Float32Array; // per-room sector light incl. flicker, indexed by room id
@@ -179,10 +182,13 @@ export interface Scene extends SceneGeom {
   time: number;
   light: number; // muzzle flash light 0..1
   pitch: number; // horizon shift in px (recoil)
+  deathTint: boolean; // red soak on dying sprites — procedural art only
 }
 
 const zbuf = new Float32Array(VIEW_W);
 let frameBuf: ImageData | null = null;
+let spriteScratch: HTMLCanvasElement | null = null;
+let spriteScratchCtx: CanvasRenderingContext2D | null = null;
 
 // Sector light for the room owning a map cell.
 function cellLight(s: Scene, mx: number, my: number): number {
@@ -302,7 +308,12 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
         const vars = s.wallTexs[th] ?? s.wallTexs[1];
         tex = vars[v % vars.length];
       }
-    } else tex = h.cell === 'd' ? s.innerDoorTex : s.doorTex;
+    } else if (h.cell === 'd') {
+      // Interior door texture follows the lower-numbered adjoining room's theme.
+      const door = h.doorId !== undefined ? s.map.doors[h.doorId] : undefined;
+      const th = door ? s.map.rooms[Math.min(...door.rooms)].theme : 0;
+      tex = s.doorTexs[th] ?? s.doorTexs[0];
+    } else tex = s.doorTex;
     ctx.drawImage(
       tex,
       Math.floor(h.texX * tex.width),
@@ -330,11 +341,11 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
     // Sliding doors: status strip across the slab top + bright leading edge.
     if (h.cell === 'd') {
       const open = s.doorOpen(h.doorId ?? -1);
-      const fade = Math.max(0.15, sh);
+      const fade = Math.max(0.15, sh) * 0.7;
       ctx.fillStyle = open > 0 ? `rgba(64,255,96,${fade})` : `rgba(255,64,64,${fade})`;
-      ctx.fillRect(col, y0, 1, 3);
+      ctx.fillRect(col, y0, 1, 2);
       if (h.doorFrac !== undefined && h.doorFrac - open < 0.02) {
-        ctx.fillStyle = open > 0 ? '#80ff90' : '#ff6060';
+        ctx.fillStyle = open > 0 ? 'rgba(128,255,144,0.7)' : 'rgba(255,96,96,0.7)';
         ctx.fillRect(col, y0, 1, lineH);
       }
     }
@@ -385,22 +396,57 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
     const drawW = size * (sp.img.width / sp.img.height); // keep art aspect
     const x0 = Math.floor(screenX - drawW / 2);
     const x1 = Math.ceil(screenX + drawW / 2);
-    const yTop = horizon + (VIEW_H / ty) * 0.5 - hSize + bob + sp.yOff * size;
+    const yTop = sp.hang
+      ? horizon - (VIEW_H / ty) * 0.5 + bob // top edge = ceiling line
+      : horizon + (VIEW_H / ty) * 0.5 - hSize + bob + sp.yOff * size;
 
-    ctx.globalAlpha = sp.alpha;
-    // Per-column slice draw for correct wall occlusion, shaded like walls.
-    const spSh = (1 - bandShade(cellLight(s, Math.floor(sp.x), Math.floor(sp.y)), ty, light)) * 0.8;
-    const imgW = sp.img.width;
-    for (let col = Math.max(0, x0); col < Math.min(VIEW_W, x1); col++) {
-      if (zbuf[col] < ty) continue;
-      let texX = Math.floor(((col - x0) / drawW) * imgW);
-      if (sp.flipX) texX = imgW - 1 - texX;
-      if (texX < 0 || texX >= imgW) continue;
-      ctx.drawImage(sp.img, texX, 0, 1, sp.img.height, col, yTop, 1, hSize);
-      if (spSh > 0.03) {
-        ctx.fillStyle = `rgba(0,0,0,${spSh})`;
-        ctx.fillRect(col, yTop, 1, hSize);
+    // Draw into a scratch buffer spanning the visible columns, then apply
+    // shade/glow/death tints with 'source-atop' so only opaque sprite pixels
+    // get tinted — fillRect overlays on the main canvas would also paint the
+    // transparent regions of tall death/thing frames (flat color blocks).
+    const c0 = Math.max(0, x0);
+    const c1 = Math.min(VIEW_W, x1);
+    if (c1 > c0) {
+      if (!spriteScratch) {
+        spriteScratch = document.createElement('canvas');
+        spriteScratch.width = VIEW_W;
+        spriteScratch.height = VIEW_H;
+        spriteScratchCtx = spriteScratch.getContext('2d')!;
       }
+      const sc = spriteScratchCtx!;
+      sc.clearRect(0, 0, c1 - c0, VIEW_H);
+      const imgW = sp.img.width;
+      for (let col = c0; col < c1; col++) {
+        let texX = Math.floor(((col - x0) / drawW) * imgW);
+        if (sp.flipX) texX = imgW - 1 - texX;
+        if (texX < 0 || texX >= imgW) continue;
+        sc.drawImage(sp.img, texX, 0, 1, sp.img.height, col - c0, yTop, 1, hSize);
+      }
+      sc.globalCompositeOperation = 'source-atop';
+      const spSh = (1 - bandShade(cellLight(s, Math.floor(sp.x), Math.floor(sp.y)), ty, light)) * 0.8;
+      if (spSh > 0.03) {
+        sc.fillStyle = `rgba(0,0,0,${spSh})`;
+        sc.fillRect(0, 0, c1 - c0, VIEW_H);
+      }
+      if (sp.glow > 0) {
+        sc.fillStyle = `rgba(140,100,255,${sp.glow * 0.5})`;
+        sc.fillRect(0, 0, c1 - c0, VIEW_H);
+      }
+      if (sp.flash && sp.flash > 0) {
+        sc.fillStyle = `rgba(255,255,255,${Math.min(0.6, sp.flash)})`;
+        sc.fillRect(0, 0, c1 - c0, VIEW_H);
+      }
+      if (sp.dying > 0 && s.deathTint) {
+        sc.fillStyle = `rgba(120,0,0,${Math.min(0.9, sp.dying * 0.5)})`;
+        sc.fillRect(0, 0, c1 - c0, VIEW_H);
+      }
+      sc.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = sp.alpha;
+      for (let col = c0; col < c1; col++) {
+        if (zbuf[col] < ty) continue;
+        ctx.drawImage(spriteScratch, col - c0, 0, 1, VIEW_H, col, 0, 1, VIEW_H);
+      }
+      ctx.globalAlpha = 1;
     }
 
     // Cursed demons get a shield shimmer.
@@ -408,14 +454,6 @@ export function render(ctx: CanvasRenderingContext2D, s: Scene): void {
       ctx.strokeStyle = `rgba(120,80,255,${0.35 + 0.25 * Math.sin(s.time * 5)})`;
       ctx.lineWidth = 1;
       ctx.strokeRect(x0 - 2, yTop - 2, drawW + 4, hSize + 4);
-    }
-    if (sp.glow > 0) {
-      ctx.fillStyle = `rgba(140,100,255,${sp.glow * 0.5})`;
-      ctx.fillRect(x0, yTop, drawW, hSize);
-    }
-    if (sp.dying > 0) {
-      ctx.fillStyle = `rgba(120,0,0,${sp.dying * 0.5})`;
-      ctx.fillRect(x0, yTop, drawW, hSize);
     }
     ctx.globalAlpha = 1;
 
@@ -468,7 +506,8 @@ export function pickTargetAt(
   maxDist = 12,
 ): { idx: number; dist: number } | null {
   let best: { idx: number; dist: number } | null = null;
-  s.sprites.forEach((sp, idx) => {
+  s.sprites.forEach((sp) => {
+    if (sp.enemy === undefined) return; // only demons are hitscan targets
     if (sp.dying > 0) return;
     const dx = sp.x - s.px;
     const dy = sp.y - s.py;
@@ -478,7 +517,7 @@ export function pickTargetAt(
     const wrapped = Math.atan2(Math.sin(ang), Math.cos(ang));
     if (Math.abs(wrapped) > maxAngle) return;
     if (!lineOfSight(s, angle, dist, wrapped)) return;
-    if (!best || dist < best.dist) best = { idx, dist };
+    if (!best || dist < best.dist) best = { idx: sp.enemy, dist };
   });
   return best;
 }

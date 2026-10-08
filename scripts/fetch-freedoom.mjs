@@ -39,15 +39,36 @@ const GRAPHIC_PREFIXES = ['stf'];
 // Hand-picked theme lumps (see sheets/*.png review). Default mode uses this
 // table verbatim; `--auto` falls back to the color-bucket heuristic instead.
 const CURATED_TEXTURES = {
-  wood:   { walls: ['crlwdl6', 'crlwdl6b', 'crwdl6', 'mywood'], trim: 'crwdh6', floor: 'floor0_1', ceil: 'ceil3_1' },
-  metal:  { walls: ['aqpanl05', 'aqpanl07', 'aqmetl08', 'aqpipe10'], trim: 'aqpanl06', floor: 'floor0_5', ceil: 'aqf028' },
-  marble: { walls: ['mwall1_1', 'mwall2_1', 'mwall4_1', 'mwall5_1'], trim: 'mwall3_1', floor: 'dem1_5', ceil: 'floor7_2' },
-  brick:  { walls: ['brick', 'brick2', 'brbrick', 'brbrick2'], trim: 'pbrick28', floor: 'floor5_1', ceil: 'flat5_7' },
-  hell:   { walls: ['hell5_1', 'hell8_1', 'dored', 'body_1', 'bodies'], trim: 'hell6_2', floor: 'blood1', ceil: 'rrock04' },
+  wood:   { walls: ['crlwdl6', 'crlwdl6b', 'crwdl6', 'mywood'], trim: 'crwdh6', floor: 'floor0_1', ceil: 'ceil3_1', door: 'door9_1' },
+  metal:  { walls: ['aqpanl05', 'aqpanl07', 'aqmetl08', 'aqpipe10'], trim: 'aqpanl06', floor: 'floor0_5', ceil: 'aqf028', door: 'door2_4' },
+  marble: { walls: ['mwall1_1', 'mwall2_1', 'mwall4_1', 'mwall5_1'], trim: 'mwall3_1', floor: 'dem1_5', ceil: 'floor7_2', door: 'door15_1' },
+  brick:  { walls: ['brick', 'brick2', 'brbrick', 'brbrick2'], trim: 'pbrick28', floor: 'floor5_1', ceil: 'flat5_7', door: 'door2_4' },
+  hell:   { walls: ['hell5_1', 'hell8_1', 'dored', 'body_1', 'bodies'], trim: 'hell6_2', floor: 'blood1', ceil: 'rrock04', door: 'door11_1' },
   hazard: 'aqf018',
 };
 const AUTO_MODE = process.argv.includes('--auto');
 const THEMES = ['wood', 'metal', 'marble', 'brick', 'hell'];
+
+// Decoration lumps (torches, pillars, lamps, gore, bodies, barrels, trees).
+const THING_PREFIXES = [
+  'tred', 'tgrn', 'tblu', 'smrt', 'smgt', 'smbt',
+  'elec', 'col1', 'col2', 'col3', 'col5', 'colu', 'tlmp',
+  'cbra', 'cand', 'bar1', 'bexp',
+  'gor1', 'gor2', 'gor3', 'gor4', 'gor5',
+  'hdb1', 'hdb2', 'hdb3', 'hdb4', 'hdb5', 'hdb6',
+  'pob1', 'pob2', 'pol5', 'pol1', 'pol3', 'tre1', 'tre2',
+];
+
+// Freedoom wavs (sounds/ dir, ds*.wav).
+const SOUND_NAMES = [
+  'dspistol', 'dsshotgn', 'dssawup', 'dssawidl', 'dssawful', 'dssawhit',
+  'dsdoropn', 'dsdorcls', 'dsbgsit1', 'dsbgact', 'dsbgdth1', 'dsbgdth2', 'dsclaw',
+  'dssgtsit', 'dssgtatk', 'dssgtdth', 'dsbrssit', 'dsbrsdth',
+  'dsfirsht', 'dsfirxpl', 'dssklatk', 'dsskldth',
+  'dsbspsit', 'dsbspdth', 'dsbspwlk', 'dsplasma',
+  'dscybsit', 'dscybdth', 'dshoof', 'dsrlaunc', 'dsbarexp',
+  'dsplpain', 'dsoof', 'dspunch', 'dsitemup', 'dsslop', 'dsnoway',
+];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -58,13 +79,13 @@ async function fetchBuf(url) {
 }
 
 // GitHub git-trees listing for a dir — no 1000-entry cap like contents API.
-async function listDir(dir) {
+async function listDir(dir, ext = '.png') {
   const res = await fetch(`${API.replace('/contents', '/git/trees')}/master:${dir}`, { headers: UA });
   if (!res.ok) throw new Error(`listing ${dir}: ${res.status}`);
   const data = await res.json();
   if (data.truncated) console.warn(`warning: ${dir} listing truncated`);
   return (data.tree || [])
-    .filter((it) => it.type === 'blob' && it.path.endsWith('.png'))
+    .filter((it) => it.type === 'blob' && it.path.endsWith(ext))
     .map((it) => it.path);
 }
 
@@ -211,12 +232,36 @@ async function main() {
     await sleep(40);
   };
 
-  // --- sprites + faces
+  // --- sprites + faces + things
+  manifest.things = {};
   for (const name of idx.sprites) {
     if (SPRITE_PREFIXES.some((p) => name.startsWith(p))) {
       await dl('sprites', name);
       const key = SPRITE_PREFIXES.find((p) => name.startsWith(p));
       (manifest.sprites[key] ||= []).push(name);
+    }
+    if (THING_PREFIXES.some((p) => name.startsWith(p))) {
+      await dl('sprites', name);
+      const key = THING_PREFIXES.find((p) => name.startsWith(p));
+      (manifest.things[key] ||= []).push(name);
+    }
+  }
+
+  // --- sounds (ds*.wav)
+  {
+    const sndIdx = await listDir('sounds', '.wav');
+    manifest.sounds = [];
+    mkdirSync(join(OUT, 'sounds'), { recursive: true });
+    for (const base of SOUND_NAMES) {
+      const name = `${base}.wav`;
+      if (!sndIdx.includes(name)) { console.log(`  sound missing: ${name}`); continue; }
+      const dst = join(OUT, 'sounds', name);
+      if (!existsSync(dst)) {
+        writeFileSync(dst, await fetchBuf(`${RAW}/sounds/${name}`));
+        count++;
+        await sleep(40);
+      }
+      manifest.sounds.push(name);
     }
   }
   for (const name of idx.graphics) {
@@ -232,9 +277,10 @@ async function main() {
       const t = CURATED_TEXTURES[theme];
       const walls = t.walls.map((n) => `${n}.png`);
       const trim = `${t.trim}.png`;
-      manifest.textures[theme] = { walls, trim, floor: `${t.floor}.png`, ceil: `${t.ceil}.png` };
+      manifest.textures[theme] = { walls, trim, floor: `${t.floor}.png`, ceil: `${t.ceil}.png`, door: `${t.door}.png` };
       for (const n of walls) await dl('patches', n);
       await dl('patches', trim);
+      await dl('patches', `${t.door}.png`);
       await dl('flats', `${t.floor}.png`);
       await dl('flats', `${t.ceil}.png`);
     }
@@ -309,6 +355,7 @@ async function main() {
     for (const t of Object.values(manifest.textures)) {
       for (const n of t.walls) keepPatches.add(n);
       if (t.trim) keepPatches.add(t.trim);
+      if (t.door) keepPatches.add(t.door);
       if (t.floor) keepFlats.add(t.floor);
       if (t.ceil) keepFlats.add(t.ceil);
     }

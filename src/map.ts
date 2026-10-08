@@ -95,10 +95,11 @@ export function isSolid(
   return false;
 }
 
-export function makeLevel(level: number, seed = level * 7919 + 13): LevelMap {
+export function makeLevel(level: number, seed = level * 7919 + 13, n = 20): LevelMap {
   const rng = mulberry32(seed);
-  const cols = 3;
-  const rows = level === 0 ? 2 : 3;
+  // Level size follows the unread count of its category.
+  const cols = n <= 6 ? 2 : 3;
+  const rows = n <= 6 ? 2 : n <= 12 ? 2 : 3;
   const w = cols * 8 + 1;
   const h = rows * 8 + 1;
   const grid: string[][] = Array.from({ length: h }, () => Array<string>(w).fill('#'));

@@ -440,7 +440,8 @@
    ],
    "trim": "crwdh6.png",
    "floor": "floor0_1.png",
-   "ceil": "ceil3_1.png"
+   "ceil": "ceil3_1.png",
+   "door": "door9_1.png"
   },
   "metal": {
    "walls": [
@@ -451,7 +452,8 @@
    ],
    "trim": "aqpanl06.png",
    "floor": "floor0_5.png",
-   "ceil": "aqf028.png"
+   "ceil": "aqf028.png",
+   "door": "door2_4.png"
   },
   "marble": {
    "walls": [
@@ -462,7 +464,8 @@
    ],
    "trim": "mwall3_1.png",
    "floor": "dem1_5.png",
-   "ceil": "floor7_2.png"
+   "ceil": "floor7_2.png",
+   "door": "door15_1.png"
   },
   "brick": {
    "walls": [
@@ -473,7 +476,8 @@
    ],
    "trim": "pbrick28.png",
    "floor": "floor5_1.png",
-   "ceil": "flat5_7.png"
+   "ceil": "flat5_7.png",
+   "door": "door2_4.png"
   },
   "hell": {
    "walls": [
@@ -485,9 +489,186 @@
    ],
    "trim": "hell6_2.png",
    "floor": "blood1.png",
-   "ceil": "rrock04.png"
+   "ceil": "rrock04.png",
+   "door": "door11_1.png"
   }
  },
  "flats": {},
- "hazard": "aqf018.png"
+ "hazard": "aqf018.png",
+ "things": {
+  "bar1": [
+   "bar1a0.png",
+   "bar1b0.png"
+  ],
+  "bexp": [
+   "bexpa0.png",
+   "bexpb0.png",
+   "bexpc0.png",
+   "bexpd0.png",
+   "bexpe0.png"
+  ],
+  "cand": [
+   "canda0.png"
+  ],
+  "cbra": [
+   "cbraa0.png"
+  ],
+  "col1": [
+   "col1a0.png"
+  ],
+  "col2": [
+   "col2a0.png"
+  ],
+  "col3": [
+   "col3a0.png"
+  ],
+  "col5": [
+   "col5a0.png",
+   "col5b0.png"
+  ],
+  "colu": [
+   "colua0.png"
+  ],
+  "elec": [
+   "eleca0.png"
+  ],
+  "gor1": [
+   "gor1a0.png",
+   "gor1b0.png",
+   "gor1c0.png"
+  ],
+  "gor2": [
+   "gor2a0.png"
+  ],
+  "gor3": [
+   "gor3a0.png"
+  ],
+  "gor4": [
+   "gor4a0.png"
+  ],
+  "gor5": [
+   "gor5a0.png"
+  ],
+  "hdb1": [
+   "hdb1a0.png"
+  ],
+  "hdb2": [
+   "hdb2a0.png"
+  ],
+  "hdb3": [
+   "hdb3a0.png"
+  ],
+  "hdb4": [
+   "hdb4a0.png"
+  ],
+  "hdb5": [
+   "hdb5a0.png"
+  ],
+  "hdb6": [
+   "hdb6a0.png"
+  ],
+  "pob1": [
+   "pob1a0.png"
+  ],
+  "pob2": [
+   "pob2a0.png"
+  ],
+  "pol1": [
+   "pol1a0.png"
+  ],
+  "pol3": [
+   "pol3a0.png",
+   "pol3b0.png"
+  ],
+  "pol5": [
+   "pol5a0.png"
+  ],
+  "smbt": [
+   "smbta0.png",
+   "smbtb0.png",
+   "smbtc0.png",
+   "smbtd0.png"
+  ],
+  "smgt": [
+   "smgta0.png",
+   "smgtb0.png",
+   "smgtc0.png",
+   "smgtd0.png"
+  ],
+  "smrt": [
+   "smrta0.png",
+   "smrtb0.png",
+   "smrtc0.png",
+   "smrtd0.png"
+  ],
+  "tblu": [
+   "tblua0.png",
+   "tblub0.png",
+   "tbluc0.png",
+   "tblud0.png"
+  ],
+  "tgrn": [
+   "tgrna0.png",
+   "tgrnb0.png",
+   "tgrnc0.png",
+   "tgrnd0.png"
+  ],
+  "tlmp": [
+   "tlmpa0.png",
+   "tlmpb0.png",
+   "tlmpc0.png",
+   "tlmpd0.png"
+  ],
+  "tre1": [
+   "tre1a0.png"
+  ],
+  "tre2": [
+   "tre2a0.png"
+  ],
+  "tred": [
+   "treda0.png",
+   "tredb0.png",
+   "tredc0.png",
+   "tredd0.png"
+  ]
+ },
+ "sounds": [
+  "dspistol.wav",
+  "dsshotgn.wav",
+  "dssawup.wav",
+  "dssawidl.wav",
+  "dssawful.wav",
+  "dssawhit.wav",
+  "dsdoropn.wav",
+  "dsdorcls.wav",
+  "dsbgsit1.wav",
+  "dsbgact.wav",
+  "dsbgdth1.wav",
+  "dsbgdth2.wav",
+  "dsclaw.wav",
+  "dssgtsit.wav",
+  "dssgtatk.wav",
+  "dssgtdth.wav",
+  "dsbrssit.wav",
+  "dsbrsdth.wav",
+  "dsfirsht.wav",
+  "dsfirxpl.wav",
+  "dssklatk.wav",
+  "dsskldth.wav",
+  "dsbspsit.wav",
+  "dsbspdth.wav",
+  "dsbspwlk.wav",
+  "dsplasma.wav",
+  "dscybsit.wav",
+  "dscybdth.wav",
+  "dshoof.wav",
+  "dsrlaunc.wav",
+  "dsbarexp.wav",
+  "dsplpain.wav",
+  "dsoof.wav",
+  "dspunch.wav",
+  "dsitemup.wav",
+  "dsslop.wav",
+  "dsnoway.wav"
+ ]
 }

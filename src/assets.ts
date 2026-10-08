@@ -33,16 +33,20 @@ export interface Assets {
   puff: HTMLCanvasElement[];
   blud: HTMLCanvasElement[];
   shots: Record<string, ShotArt>;
+  things: Record<string, HTMLCanvasElement[]>; // lump prefix → anim frames
   wallTexs: HTMLCanvasElement[][]; // per theme
   trimTexs: HTMLCanvasElement[]; // per theme door-frame trim
+  doorTexs: HTMLCanvasElement[]; // per theme interior door slab
   floorTexs: Uint8ClampedArray[]; // theme floors + hazard last
   ceilTexs: Uint8ClampedArray[];
 }
 
 interface Manifest {
   sprites: Record<string, string[]>;
+  things?: Record<string, string[]>;
+  sounds?: string[];
   graphics: string[];
-  textures: Record<string, { walls: string[]; trim?: string | null; floor: string | null; ceil: string | null }>;
+  textures: Record<string, { walls: string[]; trim?: string | null; floor: string | null; ceil: string | null; door?: string | null }>;
   hazard: string | null;
 }
 
@@ -122,10 +126,12 @@ export async function loadAssets(onProgress: (pct: number) => void): Promise<Ass
     // Collect every file to load.
     const wanted = new Set<string>();
     for (const list of Object.values(manifest.sprites)) for (const n of list) wanted.add(`sprites/${n}`);
+    for (const list of Object.values(manifest.things || {})) for (const n of list) wanted.add(`sprites/${n}`);
     for (const n of manifest.graphics) wanted.add(`graphics/${n}`);
     for (const t of Object.values(manifest.textures)) {
       for (const n of t.walls) wanted.add(`patches/${n}`);
       if (t.trim) wanted.add(`patches/${t.trim}`);
+      if (t.door) wanted.add(`patches/${t.door}`);
       if (t.floor) wanted.add(`flats/${t.floor}`);
       if (t.ceil) wanted.add(`flats/${t.ceil}`);
     }
@@ -193,6 +199,7 @@ export async function loadAssets(onProgress: (pct: number) => void): Promise<Ass
 
     const wallTexs: HTMLCanvasElement[][] = [];
     const trimTexs: HTMLCanvasElement[] = [];
+    const doorTexs: HTMLCanvasElement[] = [];
     const floorTexs: Uint8ClampedArray[] = [];
     const ceilTexs: Uint8ClampedArray[] = [];
     for (const t of THEME_NAMES) {
@@ -200,12 +207,18 @@ export async function loadAssets(onProgress: (pct: number) => void): Promise<Ass
       if (!tx || !tx.walls.length) throw new Error(`no walls for ${t}`);
       wallTexs.push(tx.walls.map((n) => get(n.replace(/\.png$/, ''))));
       trimTexs.push(tx.trim ? get(tx.trim.replace(/\.png$/, '')) : wallTexs[wallTexs.length - 1][0]);
+      doorTexs.push(tx.door ? get(tx.door.replace(/\.png$/, '')) : trimTexs[trimTexs.length - 1]);
       floorTexs.push(texPixels(get((tx.floor || tx.walls[0]).replace(/\.png$/, ''))));
       ceilTexs.push(texPixels(get((tx.ceil || tx.floor || tx.walls[0]).replace(/\.png$/, ''))));
     }
     if (manifest.hazard) floorTexs.push(texPixels(get(manifest.hazard.replace(/\.png$/, ''))));
 
-    return { demons, weapons, faces, puff, blud, shots, wallTexs, trimTexs, floorTexs, ceilTexs };
+    const things: Assets['things'] = {};
+    for (const [lump, files] of Object.entries(manifest.things || {})) {
+      things[lump] = [...files].sort().map((n) => get(n.replace(/\.png$/, '')));
+    }
+
+    return { demons, weapons, faces, puff, blud, shots, wallTexs, trimTexs, doorTexs, floorTexs, ceilTexs, things };
   } catch (err) {
     console.warn('freedoom assets failed — procedural fallback:', err);
     return null;

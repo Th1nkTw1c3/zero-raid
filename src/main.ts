@@ -8,6 +8,7 @@ import {
   VIEW_H,
   type Scene,
   type SceneGeom,
+  type SpriteDraw,
 } from './engine';
 import { makeLevel, isSolid, cellAt, roomAt, type LevelMap } from './map';
 import {
@@ -33,7 +34,8 @@ import {
   type VmDraw,
 } from './hud';
 import { loadAssets, rotPick, setFaces, type Assets } from './assets';
-import { sfx } from './sfx';
+import { placeThings, THING_DEFS, type Thing } from './things';
+import { sfx, loadSounds } from './sfx';
 import { api } from './net';
 import { showReplyOverlay } from './ui';
 import type { RoomData, UnreadMsg, RaidAction, StatusResponse } from './types';
@@ -214,6 +216,12 @@ const G = {
   assets: null as Assets | null,
   assetsLoaded: false,
   loadPct: 0,
+  sfxLoaded: false,
+  debugNoSprites: false, // test hook: render scene without any sprites
+  things: [] as Thing[],
+  thingSolid: null as Uint8Array | null,
+  lightRooms: new Set<number>(),
+  lookPitch: 0,
 };
 
 const THEMES = makeThemes();
@@ -297,6 +305,7 @@ async function boot() {
   try {
     const assets = await loadAssets((pct) => (G.loadPct = pct));
     if (assets) applyAssets(assets);
+    if (assets) void loadSounds().then((ok) => (G.sfxLoaded = ok)); // non-blocking
     G.status = await api.status();
     G.demo = G.status.demo;
     if (G.status.connected) {
@@ -344,7 +353,11 @@ function banner(text: string, color = '#f0d040', secs = 2.2, slot: BannerSlot = 
 
 // ------------------------------------------------------------ level load --
 function solid(x: number, y: number): boolean {
-  return isSolid(G.map!, x, y, doorOpen, G.exitOpen);
+  if (isSolid(G.map!, x, y, doorOpen, G.exitOpen)) return true;
+  const cx = Math.floor(x), cy = Math.floor(y);
+  const m = G.map!;
+  if (G.thingSolid && cx >= 0 && cy >= 0 && cx < m.w && cy < m.h && G.thingSolid[cy * m.w + cx]) return true;
+  return false;
 }
 function doorOpen(id: number): number {
   return G.doorState.get(id)?.open ?? 0;
@@ -362,7 +375,8 @@ function setDoor(id: number, target: 0 | 1) {
 
 function loadLevel(i: number) {
   G.level = i;
-  G.map = makeLevel(i);
+  const room = G.rooms[i];
+  G.map = makeLevel(i, i * 7919 + 13, room.unread.length);
   G.px = G.map.spawn.x;
   G.py = G.map.spawn.y;
   G.dir = -Math.PI / 2;
@@ -386,7 +400,16 @@ function loadLevel(i: number) {
   G.flickV = new Array(G.map.rooms.length).fill(1);
   G.flickT = G.map.rooms.map((r) => (r.flicker ? 0.08 + Math.random() * 0.17 : 0));
 
-  const room = G.rooms[i];
+  // Decorations — Freedoom lumps when assets loaded, empty otherwise.
+  G.things = G.assets
+    ? placeThings(G.map, new Set(Object.keys(G.assets.things)), i, G.px, G.py)
+    : [];
+  G.thingSolid = new Uint8Array(G.map.w * G.map.h);
+  for (const t of G.things) {
+    if (t.def.solid) G.thingSolid[Math.floor(t.y) * G.map.w + Math.floor(t.x)] = 1;
+  }
+  G.lightRooms = new Set(G.things.filter((t) => t.def.light).map((t) => t.roomId));
+
   const unread = [...room.unread].sort((a, b) => Number(a.boss) - Number(b.boss));
   const bossMsg = unread.find((m) => m.boss) || null;
   const fodder = unread.filter((m) => !m.boss);
@@ -533,7 +556,68 @@ function fireShot(e: Enemy) {
     smoke: def.smoke,
     burst: def.burst,
   });
-  sfx.fireball();
+  sfx.fireball(Math.hypot(e.x - G.px, e.y - G.py));
+}
+
+// Hitscan against decoration things (mainly barrels) in an angular cone.
+function pickThing(
+  scene: Scene,
+  angle: number,
+  maxAngle: number,
+  maxDist: number,
+): { thing: Thing; dist: number } | null {
+  let best: { thing: Thing; dist: number } | null = null;
+  for (const t of G.things) {
+    if (t.dead || !t.def.explosive) continue;
+    const dx = t.x - scene.px;
+    const dy = t.y - scene.py;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxDist || dist < 0.2) continue;
+    const ang = Math.atan2(dy, dx) - angle;
+    const wrapped = Math.atan2(Math.sin(ang), Math.cos(ang));
+    if (Math.abs(wrapped) > maxAngle + t.def.radius / Math.max(0.3, dist)) continue;
+    if (!hasLineOfSight(G.map!, scene.px, scene.py, t.x, t.y, geom())) continue;
+    if (!best || dist < best.dist) best = { thing: t, dist };
+  }
+  return best;
+}
+
+// A barrel goes up: BEXP burst, light + shake, splash-kills fodder, chains.
+function explode(t: Thing) {
+  t.dead = true;
+  const m = G.map!;
+  G.thingSolid![Math.floor(t.y) * m.w + Math.floor(t.x)] = 0;
+  const bexp = G.assets?.things.bexp;
+  if (bexp?.length) {
+    spawnP(t.x, t.y, 0.4, bexp[0], 1, {
+      speed: 0, life: 0.45, size: 0.9, grav: 0, vzMin: 0, vzMax: 0, frames: bexp,
+    });
+  }
+  spawnP(t.x, t.y, 0.5, sparkImg, 12, { speed: 2, life: 0.5, size: 0.08 });
+  sfx.barrel();
+  G.light = Math.max(G.light, 1.4);
+  G.shakeT = Math.max(G.shakeT, 0.25);
+  const now = performance.now() / 1000;
+  for (const e of G.enemies) {
+    if (e.dead || e.dying > 0) continue;
+    if (Math.hypot(e.x - t.x, e.y - t.y) > 1.6) continue;
+    if (e.cursed || e.kind === 'boss') {
+      e.state = 'pain';
+      e.stateT = 0.4;
+    } else {
+      doAction(e, 'archive');
+    }
+  }
+  for (const o of G.things) {
+    if (o !== t && !o.dead && o.def.explosive && !o.boomAt && Math.hypot(o.x - t.x, o.y - t.y) <= 1.6) {
+      o.boomAt = now + 0.15;
+    }
+  }
+}
+
+function hitThing(t: Thing) {
+  if (t.def.explosive) explode(t);
+  else spawnP(t.x, t.y, 0.5, dustImg, 3, { speed: 0.5, life: 0.3, size: 0.05 });
 }
 
 function shotCooldown(e: Enemy) {
@@ -552,10 +636,10 @@ function doAction(enemy: Enemy, action: RaidAction, gib = false) {
     spawnBlood(enemy, 30);
   } else if (gib) {
     // Chunky gibs for point-blank shotgun kills.
-    sfx.demonDie();
+    sfx.demonDie(enemy.kind, Math.hypot(enemy.x - G.px, enemy.y - G.py));
     spawnP(enemy.x, enemy.y, 0.5, bloodImg, 6, { speed: 2.2, size: 0.12, life: 0.8 });
   } else {
-    sfx.demonDie();
+    sfx.demonDie(enemy.kind, Math.hypot(enemy.x - G.px, enemy.y - G.py));
     spawnBlood(enemy, 10);
   }
   G.face.state = 'grin';
@@ -750,7 +834,10 @@ function fire() {
       const rdy = Math.sin(ang);
       const wall = castRay(geom(), G.px, G.py, rdx, rdy);
       const t = pickTargetAt(scene, ang, 0.045, Math.min(14, wall.dist + 0.01));
-      if (t && t.dist < wall.dist) {
+      const th = pickThing(scene, ang, 0.03, Math.min(14, wall.dist));
+      if (th && (!t || th.dist < t.dist)) {
+        hitThing(th.thing);
+      } else if (t && t.dist < wall.dist) {
         bulletHits(G.enemies[t.idx], 'archive', 1);
       } else {
         wallImpact(wall.hx, wall.hy, rdx, rdy);
@@ -772,7 +859,10 @@ function fire() {
         const rdy = Math.sin(ang);
         const wall = castRay(geom(), G.px, G.py, rdx, rdy);
         const t = pickTargetAt(scene, ang, 0.02, Math.min(7, wall.dist + 0.01));
-        if (t && t.dist < wall.dist) {
+        const th = pickThing(scene, ang, 0.015, Math.min(7, wall.dist));
+        if (th && (!t || th.dist < t.dist)) {
+          hitThing(th.thing);
+        } else if (t && t.dist < wall.dist) {
           hits.set(t.idx, (hits.get(t.idx) || 0) + 1);
         } else {
           spawnP(wall.hx - rdx * 0.05, wall.hy - rdy * 0.05, 0.5, dustImg, 2, {
@@ -872,7 +962,7 @@ function update(dt: number, now: number) {
   // Sector lighting: base theme light + jitter, with flicker rooms blinking.
   if (G.map) {
     G.map.rooms.forEach((r, i) => {
-      let l = THEMES[r.theme].light + r.lightJ;
+      let l = THEMES[r.theme].light + r.lightJ + (G.lightRooms.has(r.id) ? 0.15 : 0);
       if (r.flicker) {
         G.flickT[i] -= dt;
         if (G.flickT[i] <= 0) {
@@ -1032,13 +1122,13 @@ function update(dt: number, now: number) {
       vzMax: 0.2,
       grav: 0,
     });
-    if (isSolid(G.map!, nx, ny, doorOpen, G.exitOpen)) {
+    if (solid(nx, ny)) {
       // wall impact — burst animation + hiss
       if (sh.burst) {
         spawnP(sh.x, sh.y, sh.z, sh.burst[0], 1, { speed: 0, life: 0.3, size: 0.5, grav: 0, vzMin: 0, vzMax: 0, frames: sh.burst });
       }
       spawnP(sh.x, sh.y, sh.z, sparkImg, 6, { speed: 1, life: 0.3, size: 0.06 });
-      sfx.hiss();
+      sfx.hiss(Math.hypot(sh.x - G.px, sh.y - G.py));
       sh.life = 0;
       continue;
     }
@@ -1060,6 +1150,14 @@ function update(dt: number, now: number) {
     }
   }
   G.shots = G.shots.filter((sh) => sh.life > 0);
+
+  // Chained barrel explosions.
+  for (const t of G.things) {
+    if (t.boomAt && now / 1000 >= t.boomAt) {
+      t.boomAt = 0;
+      explode(t);
+    }
+  }
 
   // Particles — ballistic bits.
   for (const p of G.particles) {
@@ -1155,7 +1253,7 @@ function update(dt: number, now: number) {
       e.growlT -= dt;
       if (e.growlT <= 0) {
         e.growlT = 2.5 + Math.random() * 1.5;
-        if (dist < 7) sfx.growl();
+        if (dist < 7) sfx.growl(e.kind, dist);
       }
       // Ranged demons hurl projectiles when you keep your distance.
       e.shotCd -= dt;
@@ -1233,6 +1331,7 @@ function update(dt: number, now: number) {
       sfx.chainsawRev(true);
       e.sawT += dt;
       spawnBlood(e, 2);
+      sfx.sawHit();
       G.shakeT = Math.max(G.shakeT, 0.05);
       if (e.sawT > 0.55) {
         e.sawT = -999;
@@ -1280,15 +1379,16 @@ function sceneObj(): Scene {
     wallTexs,
     trimTexs,
     doorTex,
-    innerDoorTex,
+    doorTexs: G.assets ? G.assets.doorTexs : [0, 1, 2, 3, 4].map(() => innerDoorTex),
     floorTexs,
     ceilTexs,
     roomLight: G.roomLight,
     decals: G.decals,
     time: performance.now() / 1000,
     light: G.light,
-    pitch: G.pitch,
-    sprites: G.enemies.map((e) => {
+    pitch: G.pitch + G.lookPitch,
+    deathTint: !G.assetsLoaded,
+    sprites: G.debugNoSprites ? [] : G.enemies.map((e, ei): SpriteDraw => {
       const f = G.assets ? G.assets.demons[e.kind] : demons[e.kind];
       let rf = f.walk[e.frame % f.walk.length];
       let yOff = 0;
@@ -1317,15 +1417,43 @@ function sceneObj(): Scene {
         dying: e.dying,
         bob: e.bob,
         glow: e.glow,
+        flash: e.state === 'pain' ? 0.6 : 0,
         flipX: flip !== (rf.rotating ? false : e.flipX),
         scale: G.assets ? G.assets.demons[e.kind].worldH : KIND[e.kind].scale,
         yOff,
+        enemy: ei,
         alpha:
           e.kind === 'phantom' && e.dying === 0
             ? 0.45 + 0.55 * Math.abs(Math.sin(performance.now() / 1000 * 7 + e.bob))
             : 1,
       };
-    }),
+    }).concat(
+      // Decoration things — animated at 8fps, no label.
+      G.things
+        .filter((t) => !t.dead)
+        .map((t) => {
+          const fr = G.assets?.things[t.def.lump] || [];
+          const img = fr.length
+            ? fr[Math.floor((performance.now() / 125 + t.animOff * 8) % fr.length)]
+            : dustImg;
+          return {
+            x: t.x,
+            y: t.y,
+            img,
+            label: '',
+            cursed: false,
+            boss: false,
+            dying: 0,
+            bob: 0,
+            glow: 0,
+            flipX: false,
+            scale: t.def.scale,
+            yOff: 0,
+            alpha: 1,
+            hang: t.def.hang,
+          };
+        }),
+    ),
     particles: [
       ...G.particles.map((p) => ({
         x: p.x,
@@ -1553,7 +1681,7 @@ function drawTitle() {
   ctx.fillText('WASD move · mouse turn · 1 archive · 2 trash · 3 star · 4 reply-spell · TAB map', cx, 148);
   ctx.fillText('violet demons need a real reply — or a chainsaw', cx, 158);
   ctx.fillText(
-    G.assetsLoaded ? 'art: Freedoom (BSD) — freedoom.github.io' : 'art: procedural fallback',
+    G.assetsLoaded ? 'art+sfx: Freedoom (BSD) — freedoom.github.io' : 'art: procedural fallback',
     cx,
     168,
   );
@@ -1608,6 +1736,9 @@ document.addEventListener('keydown', (e) => {
     G.weapon = 'spell';
     fire();
   }
+  if (e.key === 'PageUp') G.lookPitch = Math.min(48, G.lookPitch + 4);
+  if (e.key === 'PageDown') G.lookPitch = Math.max(-48, G.lookPitch - 4);
+  if (e.key === 'Home') G.lookPitch = 0;
 });
 
 document.addEventListener('keyup', (e) => {
@@ -1639,7 +1770,11 @@ document.addEventListener('mouseup', () => {
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('mousemove', (e) => {
-  if (document.pointerLockElement === canvas) G.mouseDx += e.movementX;
+  if (document.pointerLockElement === canvas) {
+    G.mouseDx += e.movementX;
+    // Vertical look: pointer up (negative movementY) looks up.
+    G.lookPitch = Math.min(48, Math.max(-48, G.lookPitch + e.movementY * 0.25));
+  }
 });
 document.addEventListener('wheel', (e) => {
   if (G.screen !== 'play') return;
@@ -1665,8 +1800,7 @@ requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtesting/debugging.
 if (import.meta.env.DEV) {
-  (window as unknown as { __zr: typeof G & { spawnTest: typeof spawnEnemy } }).__zr = Object.assign(
-    G,
-    { spawnTest: spawnEnemy },
-  );
+  (window as unknown as {
+    __zr: typeof G & { spawnTest: typeof spawnEnemy; loadLevel: typeof loadLevel };
+  }).__zr = Object.assign(G, { spawnTest: spawnEnemy, loadLevel });
 }
