@@ -670,6 +670,7 @@ async function castSpell(enemy: Enemy) {
   document.exitPointerLock?.();
   const body = await showReplyOverlay(enemy.msg, G.demo);
   G.screen = 'play';
+  relock();
   if (body === null) {
     banner('SPELL SHEATHED', '#908880', 1.5);
     return;
@@ -1346,6 +1347,17 @@ function update(dt: number, now: number) {
   }
 }
 
+// Re-grab the mouse after an overlay/screen handed it back. Must run within
+// the user gesture that closed the overlay (keydown/click), which it does.
+function relock() {
+  if (G.screen === 'play' && document.pointerLockElement !== canvas) {
+    try {
+      const r = canvas.requestPointerLock?.() as unknown as Promise<void> | undefined;
+      r?.catch?.(() => {});
+    } catch { /* needs a fresh gesture — next click will do it */ }
+  }
+}
+
 function nextLevel() {
   if (G.level + 1 >= G.rooms.length) {
     G.screen = 'win';
@@ -1354,9 +1366,9 @@ function nextLevel() {
   }
   G.screen = 'trans';
   G.transT = 0;
-  document.exitPointerLock?.();
   loadLevel(G.level + 1);
   G.screen = 'play';
+  relock();
 }
 
 function switchWeapon(w: Weapon) {
@@ -1705,6 +1717,7 @@ document.addEventListener('keydown', (e) => {
         loadLevel(0);
         G.screen = 'play';
         sfx.door();
+        relock();
       } else {
         window.location.href = '/api/auth';
       }
