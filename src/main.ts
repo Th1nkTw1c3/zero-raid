@@ -1785,8 +1785,9 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('mousemove', (e) => {
   if (document.pointerLockElement === canvas) {
     G.mouseDx += e.movementX;
-    // Vertical look: pointer up (negative movementY) looks up.
-    G.lookPitch = Math.min(48, Math.max(-48, G.lookPitch + e.movementY * 0.25));
+    // Vertical look: pointer up (negative movementY) looks up. Positive pitch
+    // lowers the horizon (= looking up), so the sign flips here.
+    G.lookPitch = Math.min(48, Math.max(-48, G.lookPitch - e.movementY * 0.25));
   }
 });
 document.addEventListener('wheel', (e) => {
