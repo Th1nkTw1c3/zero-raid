@@ -137,15 +137,20 @@ export async function loadAssets(onProgress: (pct: number) => void): Promise<Ass
     }
     if (manifest.hazard) wanted.add(`flats/${manifest.hazard}`);
 
+    // Load in parallel — ~500 small PNGs serially is 20s+ on a CDN.
     const imgs: Images = new Map();
     let done = 0;
     const total = wanted.size;
-    for (const path of wanted) {
-      const img = await loadImg(`freedoom/${path}`);
-      const base = path.split('/')[1].replace(/\.png$/, '');
-      imgs.set(base, toCanvas(img));
-      onProgress(Math.round((++done / total) * 100));
-    }
+    const queue = [...wanted];
+    const worker = async () => {
+      for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+        const img = await loadImg(`freedoom/${path}`);
+        const base = path.split('/')[1].replace(/\.png$/, '');
+        imgs.set(base, toCanvas(img));
+        onProgress(Math.round((++done / total) * 100));
+      }
+    };
+    await Promise.all(Array.from({ length: 24 }, worker));
 
     const get = (n: string) => {
       const c = imgs.get(n);

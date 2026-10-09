@@ -16,12 +16,14 @@ export async function loadSounds(): Promise<boolean> {
     const names = man.sounds || [];
     if (!names.length) return false;
     const a = audio() || new AudioContext();
-    for (const n of names) {
-      const r = await fetch(`freedoom/sounds/${n}`);
-      if (!r.ok) continue;
-      const buf = await a.decodeAudioData(await r.arrayBuffer());
-      buffers.set(n.replace(/\.wav$/, ''), buf);
-    }
+    await Promise.all(
+      names.map(async (n) => {
+        const r = await fetch(`freedoom/sounds/${n}`);
+        if (!r.ok) return;
+        const buf = await a.decodeAudioData(await r.arrayBuffer());
+        buffers.set(n.replace(/\.wav$/, ''), buf);
+      }),
+    );
     sfxReady = buffers.size > 0;
     return sfxReady;
   } catch {
