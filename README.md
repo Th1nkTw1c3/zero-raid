@@ -2,12 +2,24 @@
 
 **Your inbox is a dungeon. Clear it.**
 
+▶ **Play live: https://zero-raid.vercel.app** — press `D` on the title screen for Demo mode
+(live Gmail sign-in is in Google OAuth *Testing* mode, so only allow-listed test users can connect a real inbox).
+
 ![Zero Raid](screenshot.png)
 
 A DOOM-style (1993) first-person email triage game built for Hackyard Yard #4.
 Every demon is a **real unread email** in your Gmail. Every kill is a **real
 mutation** — archive, trash, star, or a threaded reply. This is not
 email-themed wallpaper: the only way to win is to actually hit inbox zero.
+
+## How the real chore gets done
+
+Built for Hackyard Yard #4 (Gamification, sponsored by Ryware), whose rule is
+*the real chore has to get done*. Zero Raid signs in with Google (scopes
+`gmail.modify` + `gmail.send` only) and every hit calls the Gmail REST API on
+the actual message: pistol = archive, shotgun = trash, chainsaw = star,
+Hellfire = a real threaded reply that then archives the thread. Clear every
+level and you have reached real inbox zero.
 
 ## How it plays
 
@@ -52,7 +64,10 @@ npm run dev            # API on :8787, game on http://localhost:5173
    add yourself as test user.
 3. Credentials → OAuth client ID (Web) → redirect URIs:
    `http://localhost:5173/api/callback` and `https://<your-app>.vercel.app/api/callback`.
-4. Put `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET` in `.env`.
+4. Put `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET` (any long
+   random string, e.g. `openssl rand -hex 32`) in `.env`. Optionally set
+   `GOOGLE_REDIRECT_URI` (defaults to `{request origin}/api/callback`).
+   `server/dev.ts` loads `.env` automatically; `.env` is gitignored.
 
 ### No Google creds? Demo mode
 
@@ -65,7 +80,11 @@ creds configured you can still force it via the `D` key on the title screen or
 
 ```bash
 npx vercel        # framework preset: Vite; api/*.ts become serverless fns
-npx vercel env add GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SESSION_SECRET
+# add each var for production (values via prompt/stdin):
+npx vercel env add GOOGLE_CLIENT_ID production
+npx vercel env add GOOGLE_CLIENT_SECRET production
+npx vercel env add SESSION_SECRET production
+npx vercel env add GOOGLE_REDIRECT_URI production   # https://<your-app>.vercel.app/api/callback
 npx vercel --prod
 ```
 
@@ -73,6 +92,13 @@ The `api/` handlers are plain Node `(req, res)` functions — they deploy as
 Vercel serverless functions unchanged, and `server/dev.ts` mounts them on
 Express for local dev. Sessions live in an AES-256-GCM encrypted cookie; no
 database.
+
+## Privacy
+
+- Least-privilege scopes: `gmail.modify` and `gmail.send` only.
+- OAuth tokens live only in your browser, inside an AES-256-GCM encrypted,
+  HTTP-only session cookie. There is no database and nothing is stored server-side.
+- The game only touches mail when you fire a weapon at it. `/api/logout` clears the session.
 
 ## Demo script (for the video)
 
