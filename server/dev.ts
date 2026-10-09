@@ -13,6 +13,9 @@ import modify from '../api/modify.js';
 import reply from '../api/reply.js';
 import logout from '../api/logout.js';
 
+// Load .env (Node >= 20.12) so local dev picks up OAuth creds. Handlers read env lazily per request.
+try { process.loadEnvFile(); } catch { /* no .env: demo mode */ }
+
 const app = express();
 const PORT = Number(process.env.API_PORT || 8787);
 
